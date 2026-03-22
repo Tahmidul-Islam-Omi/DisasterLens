@@ -13,9 +13,9 @@ router = APIRouter(prefix="/test", tags=["Test"])
     status_code=status.HTTP_201_CREATED,
     summary="Create a test item",
 )
-def create_test_item(payload: TestItemCreate) -> APIResponse:
-    """Create and persist a new TestItem."""
-    item = test_service.create(payload)
+async def create_test_item(payload: TestItemCreate) -> APIResponse:
+    """Create and persist a new TestItem in MongoDB."""
+    item = await test_service.create(payload)
     return success_response("TestItem created successfully", item.to_dict())
 
 
@@ -24,9 +24,9 @@ def create_test_item(payload: TestItemCreate) -> APIResponse:
     response_model=APIResponse,
     summary="List all test items",
 )
-def get_test_items() -> APIResponse:
-    """Return all TestItems in the store."""
-    items = test_service.get_all()
+async def get_test_items() -> APIResponse:
+    """Return all TestItems from MongoDB."""
+    items = await test_service.get_all()
     return success_response("TestItems retrieved", [i.to_dict() for i in items])
 
 
@@ -35,9 +35,9 @@ def get_test_items() -> APIResponse:
     response_model=APIResponse,
     summary="Get a single test item",
 )
-def get_test_item(item_id: str) -> APIResponse:
+async def get_test_item(item_id: str) -> APIResponse:
     """Return a specific TestItem by ID."""
-    item = test_service.get_by_id(item_id)
+    item = await test_service.get_by_id(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="TestItem not found")
     return success_response("TestItem retrieved", item.to_dict())
@@ -48,9 +48,9 @@ def get_test_item(item_id: str) -> APIResponse:
     response_model=APIResponse,
     summary="Update a test item",
 )
-def update_test_item(item_id: str, payload: TestItemUpdate) -> APIResponse:
+async def update_test_item(item_id: str, payload: TestItemUpdate) -> APIResponse:
     """Partially update an existing TestItem."""
-    item = test_service.update(item_id, payload)
+    item = await test_service.update(item_id, payload)
     if not item:
         raise HTTPException(status_code=404, detail="TestItem not found")
     return success_response("TestItem updated successfully", item.to_dict())
@@ -61,9 +61,9 @@ def update_test_item(item_id: str, payload: TestItemUpdate) -> APIResponse:
     response_model=APIResponse,
     summary="Delete a test item",
 )
-def delete_test_item(item_id: str) -> APIResponse:
-    """Remove a TestItem from the store."""
-    deleted = test_service.delete(item_id)
+async def delete_test_item(item_id: str) -> APIResponse:
+    """Remove a TestItem from MongoDB."""
+    deleted = await test_service.delete(item_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="TestItem not found")
     return success_response("TestItem deleted successfully")

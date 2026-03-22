@@ -6,18 +6,24 @@ import uuid
 
 @dataclass
 class TestItem:
-    """
-    Domain model for a Test resource.
-
-    In a real project this would be backed by an ORM (e.g. SQLAlchemy).
-    Here it acts as a plain in-memory entity to demonstrate the MVC pattern.
-    """
+    """Domain model for a Test resource (in-memory representation)."""
 
     name: str
     description: Optional[str] = None
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: datetime = field(default_factory=datetime.utcnow)
     is_active: bool = True
+
+    @staticmethod
+    def from_doc(doc: dict) -> "TestItem":
+        """Build a TestItem from a raw MongoDB document."""
+        return TestItem(
+            id=str(doc["_id"]),
+            name=doc["name"],
+            description=doc.get("description"),
+            is_active=doc.get("is_active", True),
+            created_at=doc.get("created_at", datetime.utcnow()),
+        )
 
     def to_dict(self) -> dict:
         return {

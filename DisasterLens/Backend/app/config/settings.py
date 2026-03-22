@@ -16,8 +16,9 @@ class Settings(BaseSettings):
     # API
     API_V1_PREFIX: str = "/api/v1"
 
-    # Database (placeholders – fill in .env)
-    DATABASE_URL: str = "sqlite:///./disasterlens.db"
+    # MongoDB
+    MONGODB_URI: str = "mongodb://localhost:27017"
+    MONGODB_DB_NAME: str = "disasterlens"
 
     # Security
     SECRET_KEY: str = "change-me-in-production"
