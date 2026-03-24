@@ -7,15 +7,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { TaskCard } from "../components/TaskCard";
 import { AssignTaskDialog } from "../components/AssignTaskDialog";
 import { useLanguage } from "../i18n/LanguageContext";
-
-const mockTasks = [
-  { id: "T001", title: "Deliver relief supplies to Char Janajat", titleBn: "চর জনজাতে ত্রাণ সামগ্রী পৌঁছে দিন", type: "Relief Distribution", typeBn: "ত্রাণ বিতরণ", priority: "critical" as const, location: "Char Janajat", locationBn: "চর জনজাত", assignedTo: ["Aminul Islam", "Shahida Akter", "Rahim Uddin"], assignedToBn: ["আমিনুল ইসলাম", "শাহিদা আক্তার", "রহিম উদ্দিন"], status: "in-progress" as const, progress: 65, deadline: "Today, 5:00 PM", deadlineBn: "আজ, ৫:০০ PM", description: "Distribute food packages and water bottles to 50 families in flood-affected area", startTime: "Today, 2:00 PM", equipmentNeeded: ["Relief packages", "Transport vehicle", "Mobile phone"] },
-  { id: "T002", title: "Field assessment of flood damage in Uttar Para", titleBn: "উত্তর পাড়ায় বন্যার ক্ষয়ক্ষতির মাঠ মূল্যায়ন", type: "Field Assessment", typeBn: "মাঠ মূল্যায়ন", priority: "high" as const, location: "Uttar Para", locationBn: "উত্তর পাড়া", assignedTo: "Shahida Akter", assignedToBn: "শাহিদা আক্তার", status: "assigned" as const, progress: 0, deadline: "Today, 6:00 PM", deadlineBn: "আজ, ৬:০০ PM", description: "Assess flood damage to houses and infrastructure", startTime: "Today, 4:00 PM", equipmentNeeded: ["Camera", "Assessment form", "Notebook"] },
-  { id: "T003", title: "Medical aid camp setup at Union Parishad Complex", titleBn: "ইউনিয়ন পরিষদ কমপ্লেক্সে চিকিৎসা সেবা ক্যাম্প স্থাপন", type: "Medical Aid", typeBn: "চিকিৎসা সেবা", priority: "critical" as const, location: "Union Parishad Complex", locationBn: "ইউনিয়ন পরিষদ কমপ্লেক্স", assignedTo: ["Rahim Uddin", "Kulsum Begum"], assignedToBn: ["রহিম উদ্দিন", "কুলসুম বেগম"], status: "in-progress" as const, progress: 80, deadline: "Today, 3:00 PM", deadlineBn: "আজ, ৩:০০ PM", description: "Set up medical camp with doctor", startTime: "Today, 10:00 AM", equipmentNeeded: ["First aid kits", "Medicines", "Tables and chairs"] },
-  { id: "T004", title: "Evacuation support for elderly residents", titleBn: "বয়স্ক বাসিন্দাদের সরিয়ে নেওয়ার সহায়তা", type: "Evacuation Support", typeBn: "সরিয়ে নেওয়ার সহায়তা", priority: "critical" as const, location: "Dakshin Para", locationBn: "দক্ষিণ পাড়া", assignedTo: ["Kulsum Begum", "Habibur Rahman"], assignedToBn: ["কুলসুম বেগম", "হাবিবুর রহমান"], status: "completed" as const, progress: 100, deadline: "Today, 12:00 PM", deadlineBn: "আজ, ১২:০০ PM", description: "Assist elderly residents in moving to shelter", startTime: "Today, 9:00 AM", equipmentNeeded: ["Transport vehicle", "Wheelchair"] },
-  { id: "T005", title: "Communication support - door to door alert", titleBn: "যোগাযোগ সহায়তা - বাড়ি বাড়ি সতর্কতা", type: "Communication Support", typeBn: "যোগাযোগ সহায়তা", priority: "high" as const, location: "Paschim Bazar", locationBn: "পশ্চিম বাজার", assignedTo: "Habibur Rahman", assignedToBn: "হাবিবুর রহমান", status: "pending" as const, progress: 0, deadline: "Tomorrow, 10:00 AM", deadlineBn: "আগামীকাল, ১০:০০ AM", description: "Visit households and inform about heavy rainfall", startTime: "Tomorrow, 8:00 AM", equipmentNeeded: ["Megaphone", "Alert pamphlets"] },
-  { id: "T006", title: "Rescue support near Padma river area", titleBn: "পদ্মা নদী এলাকায় উদ্ধার সহায়তা", type: "Rescue Support", typeBn: "উদ্ধার সহায়তা", priority: "medium" as const, location: "Madhya Gram", locationBn: "মধ্য গ্রাম", assignedTo: ["Roksana Parvin", "Khalid Hasan"], assignedToBn: ["রোকসানা পারভিন", "খালিদ হাসান"], status: "overdue" as const, progress: 40, deadline: "Yesterday, 4:00 PM", deadlineBn: "গতকাল, ৪:০০ PM", description: "Support rescue team in evacuating stranded families", startTime: "Yesterday, 2:00 PM", equipmentNeeded: ["Life jackets", "Ropes", "Emergency kit"] },
-];
+import { mockTasks } from "../data/mockData";
+import type { Task } from "../types";
 
 export function TaskManagement() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -27,7 +20,7 @@ export function TaskManagement() {
   const completedTasks = mockTasks.filter(task => task.status === "completed");
   const overdueTasks = mockTasks.filter(task => task.status === "overdue");
 
-  const translateTask = (task: typeof mockTasks[0]) => ({
+  const translateTask = (task: Task) => ({
     ...task,
     title: d(task.title, task.titleBn),
     location: d(task.location, task.locationBn),

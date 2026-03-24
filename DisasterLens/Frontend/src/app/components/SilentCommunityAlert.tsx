@@ -1,18 +1,7 @@
 import { AlertTriangle } from "lucide-react";
 import { Card } from "./ui/card";
 import { useLanguage } from "../i18n/LanguageContext";
-
-interface SilentCommunity {
-  villageName: string;
-  villageNameBn: string;
-  populationContacted: number;
-  responsesReceived: number;
-}
-
-const silentCommunities: SilentCommunity[] = [
-  { villageName: "Char Janajat", villageNameBn: "চর জনজাত", populationContacted: 450, responsesReceived: 23 },
-  { villageName: "Uttar Para", villageNameBn: "উত্তর পাড়া", populationContacted: 320, responsesReceived: 15 },
-];
+import { silentCommunities } from "../data/mockData";
 
 export function SilentCommunityAlert() {
   const { t, d } = useLanguage();

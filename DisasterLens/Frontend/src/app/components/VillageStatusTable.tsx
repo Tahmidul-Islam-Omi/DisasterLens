@@ -3,24 +3,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "./ui/table";
 import { useLanguage } from "../i18n/LanguageContext";
-
-interface VillageStatus {
-  villageName: string;
-  villageNameBn: string;
-  safe: number;
-  needHelp: number;
-  needRescue: number;
-  noResponse: number;
-}
-
-const villageData: VillageStatus[] = [
-  { villageName: "Dakshin Para", villageNameBn: "দক্ষিণ পাড়া", safe: 342, needHelp: 12, needRescue: 3, noResponse: 18 },
-  { villageName: "Madhya Gram", villageNameBn: "মধ্য গ্রাম", safe: 289, needHelp: 8, needRescue: 0, noResponse: 25 },
-  { villageName: "Char Janajat", villageNameBn: "চর জনজাত", safe: 18, needHelp: 5, needRescue: 0, noResponse: 427 },
-  { villageName: "Uttar Para", villageNameBn: "উত্তর পাড়া", safe: 12, needHelp: 3, needRescue: 0, noResponse: 305 },
-  { villageName: "Paschim Bazar", villageNameBn: "পশ্চিম বাজার", safe: 412, needHelp: 15, needRescue: 2, noResponse: 31 },
-  { villageName: "Purba Ghosh Para", villageNameBn: "পূর্ব ঘোষ পাড়া", safe: 278, needHelp: 6, needRescue: 1, noResponse: 22 },
-];
+import { villageStatusData } from "../data/mockData";
 
 export function VillageStatusTable() {
   const { t, d } = useLanguage();
@@ -41,7 +24,7 @@ export function VillageStatusTable() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {villageData.map((village, index) => (
+              {villageStatusData.map((village, index) => (
                 <TableRow key={index}>
                   <TableCell className="font-medium">{d(village.villageName, village.villageNameBn)}</TableCell>
                   <TableCell className="text-right">

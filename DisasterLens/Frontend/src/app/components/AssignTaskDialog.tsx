@@ -11,21 +11,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Checkbox } from "./ui/checkbox";
 import { Badge } from "./ui/badge";
 import { useLanguage } from "../i18n/LanguageContext";
+import { volunteerOptions } from "../data/mockData";
 
 interface AssignTaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-const availableVolunteers = [
-  { id: "v1", name: "Aminul Islam", nameBn: "আমিনুল ইসলাম", status: "available" },
-  { id: "v2", name: "Shahida Akter", nameBn: "শাহিদা আক্তার", status: "active" },
-  { id: "v3", name: "Rahim Uddin", nameBn: "রহিম উদ্দিন", status: "available" },
-  { id: "v4", name: "Kulsum Begum", nameBn: "কুলসুম বেগম", status: "active" },
-  { id: "v5", name: "Habibur Rahman", nameBn: "হাবিবুর রহমান", status: "available" },
-  { id: "v6", name: "Roksana Parvin", nameBn: "রোকসানা পারভিন", status: "available" },
-  { id: "v7", name: "Khalid Hasan", nameBn: "খালিদ হাসান", status: "off-duty" },
-];
 
 const volunteerStatusStyles: Record<string, string> = {
   available: "bg-green-100 text-green-800",
@@ -67,7 +58,7 @@ export function AssignTaskDialog({ open, onOpenChange }: AssignTaskDialogProps) 
   };
 
   const getVolunteerName = (id: string) => {
-    const v = availableVolunteers.find(v => v.id === id);
+    const v = volunteerOptions.find(vol => vol.id === id);
     return v ? d(v.name, v.nameBn) : "";
   };
 
@@ -170,7 +161,7 @@ export function AssignTaskDialog({ open, onOpenChange }: AssignTaskDialogProps) 
                   )}
 
                   <div className="border rounded-lg p-4 max-h-64 overflow-y-auto space-y-2">
-                    {availableVolunteers.map((volunteer) => (
+                    {volunteerOptions.map((volunteer) => (
                       <div key={volunteer.id} className="flex items-center space-x-3 p-2 hover:bg-gray-50 rounded-md">
                         <Checkbox id={volunteer.id} checked={selectedVolunteers.includes(volunteer.id)} onCheckedChange={() => toggleVolunteer(volunteer.id)} />
                         <label htmlFor={volunteer.id} className="flex-1 text-sm font-medium leading-none cursor-pointer">

@@ -8,26 +8,7 @@ import {
 import { Badge } from "../components/ui/badge";
 import { AddVolunteerDialog } from "../components/AddVolunteerDialog";
 import { useLanguage } from "../i18n/LanguageContext";
-
-interface Volunteer {
-  name: string;
-  nameBn: string;
-  phone: string;
-  assignedArea: string;
-  assignedAreaBn: string;
-  tasksCompleted: number;
-  status: "active" | "available" | "off-duty";
-}
-
-const volunteers: Volunteer[] = [
-  { name: "Aminul Islam", nameBn: "আমিনুল ইসলাম", phone: "+880 1712-111222", assignedArea: "Dakshin Para", assignedAreaBn: "দক্ষিণ পাড়া", tasksCompleted: 12, status: "active" },
-  { name: "Shahida Akter", nameBn: "শাহিদা আক্তার", phone: "+880 1823-222333", assignedArea: "Char Janajat", assignedAreaBn: "চর জনজাত", tasksCompleted: 8, status: "active" },
-  { name: "Rahim Uddin", nameBn: "রহিম উদ্দিন", phone: "+880 1934-333444", assignedArea: "Madhya Gram", assignedAreaBn: "মধ্য গ্রাম", tasksCompleted: 15, status: "active" },
-  { name: "Kulsum Begum", nameBn: "কুলসুম বেগম", phone: "+880 1745-444555", assignedArea: "Uttar Para", assignedAreaBn: "উত্তর পাড়া", tasksCompleted: 6, status: "active" },
-  { name: "Habibur Rahman", nameBn: "হাবিবুর রহমান", phone: "+880 1856-555666", assignedArea: "Paschim Bazar", assignedAreaBn: "পশ্চিম বাজার", tasksCompleted: 10, status: "available" },
-  { name: "Roksana Parvin", nameBn: "রোকসানা পারভিন", phone: "+880 1967-666777", assignedArea: "Not Assigned", assignedAreaBn: "নির্ধারিত নয়", tasksCompleted: 4, status: "available" },
-  { name: "Khalid Hasan", nameBn: "খালিদ হাসান", phone: "+880 1778-777888", assignedArea: "Purba Ghosh Para", assignedAreaBn: "পূর্ব ঘোষ পাড়া", tasksCompleted: 9, status: "off-duty" },
-];
+import { volunteers } from "../data/mockData";
 
 const statusStyleMap: Record<string, string> = {
   active: "bg-green-100 text-green-800",

@@ -7,32 +7,7 @@ import {
 } from "../components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { useLanguage } from "../i18n/LanguageContext";
-
-interface Member {
-  id: string;
-  name: string;
-  nameBn: string;
-  age: number;
-  gender: string;
-  genderBn: string;
-  village: string;
-  villageBn: string;
-  phone: string;
-  household: string;
-}
-
-const members: Member[] = [
-  { id: "CM001", name: "Kamal Hossain", nameBn: "কামাল হোসেন", age: 45, gender: "Male", genderBn: "পুরুষ", village: "Dakshin Para", villageBn: "দক্ষিণ পাড়া", phone: "+880 1712-345678", household: "HH-001" },
-  { id: "CM002", name: "Fatima Begum", nameBn: "ফাতেমা বেগম", age: 38, gender: "Female", genderBn: "মহিলা", village: "Madhya Gram", villageBn: "মধ্য গ্রাম", phone: "+880 1823-456789", household: "HH-002" },
-  { id: "CM003", name: "Abdul Rahman", nameBn: "আব্দুল রহমান", age: 52, gender: "Male", genderBn: "পুরুষ", village: "Char Janajat", villageBn: "চর জনজাত", phone: "+880 1934-567890", household: "HH-003" },
-  { id: "CM004", name: "Rahima Khatun", nameBn: "রহিমা খাতুন", age: 29, gender: "Female", genderBn: "মহিলা", village: "Dakshin Para", villageBn: "দক্ষিণ পাড়া", phone: "+880 1745-678901", household: "HH-004" },
-  { id: "CM005", name: "Mohammad Ali", nameBn: "মোহাম্মদ আলী", age: 61, gender: "Male", genderBn: "পুরুষ", village: "Uttar Para", villageBn: "উত্তর পাড়া", phone: "+880 1856-789012", household: "HH-005" },
-  { id: "CM006", name: "Nasima Akter", nameBn: "নাসিমা আক্তার", age: 34, gender: "Female", genderBn: "মহিলা", village: "Paschim Bazar", villageBn: "পশ্চিম বাজার", phone: "+880 1967-890123", household: "HH-006" },
-  { id: "CM007", name: "Jamal Uddin", nameBn: "জামাল উদ্দিন", age: 47, gender: "Male", genderBn: "পুরুষ", village: "Purba Ghosh Para", villageBn: "পূর্ব ঘোষ পাড়া", phone: "+880 1778-901234", household: "HH-007" },
-  { id: "CM008", name: "Salma Begum", nameBn: "সালমা বেগম", age: 42, gender: "Female", genderBn: "মহিলা", village: "Madhya Gram", villageBn: "মধ্য গ্রাম", phone: "+880 1889-012345", household: "HH-008" },
-  { id: "CM009", name: "Ruhul Amin", nameBn: "রুহুল আমিন", age: 55, gender: "Male", genderBn: "পুরুষ", village: "Dakshin Para", villageBn: "দক্ষিণ পাড়া", phone: "+880 1990-123456", household: "HH-009" },
-  { id: "CM010", name: "Shapla Khatun", nameBn: "শাপলা খাতুন", age: 26, gender: "Female", genderBn: "মহিলা", village: "Char Janajat", villageBn: "চর জনজাত", phone: "+880 1701-234567", household: "HH-010" },
-];
+import { members } from "../data/mockData";
 
 export function MemberList() {
   const { t, d } = useLanguage();

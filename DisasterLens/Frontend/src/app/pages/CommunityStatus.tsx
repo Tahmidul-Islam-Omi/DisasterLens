@@ -7,28 +7,7 @@ import {
 } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
 import { useLanguage } from "../i18n/LanguageContext";
-
-interface CommunityResponse {
-  name: string;
-  nameBn: string;
-  village: string;
-  villageBn: string;
-  phone: string;
-  status: "safe" | "help" | "rescue" | "no-response";
-  lastResponse: string;
-  lastResponseBn: string;
-}
-
-const responseData: CommunityResponse[] = [
-  { name: "Kamal Hossain", nameBn: "কামাল হোসেন", village: "Dakshin Para", villageBn: "দক্ষিণ পাড়া", phone: "+880 1712-345678", status: "safe", lastResponse: "2 hours ago", lastResponseBn: "২ ঘণ্টা আগে" },
-  { name: "Fatima Begum", nameBn: "ফাতেমা বেগম", village: "Madhya Gram", villageBn: "মধ্য গ্রাম", phone: "+880 1823-456789", status: "safe", lastResponse: "1 hour ago", lastResponseBn: "১ ঘণ্টা আগে" },
-  { name: "Abdul Rahman", nameBn: "আব্দুল রহমান", village: "Char Janajat", villageBn: "চর জনজাত", phone: "+880 1934-567890", status: "help", lastResponse: "30 min ago", lastResponseBn: "৩০ মিনিট আগে" },
-  { name: "Rahima Khatun", nameBn: "রহিমা খাতুন", village: "Dakshin Para", villageBn: "দক্ষিণ পাড়া", phone: "+880 1745-678901", status: "rescue", lastResponse: "15 min ago", lastResponseBn: "১৫ মিনিট আগে" },
-  { name: "Mohammad Ali", nameBn: "মোহাম্মদ আলী", village: "Uttar Para", villageBn: "উত্তর পাড়া", phone: "+880 1856-789012", status: "no-response", lastResponse: "Never", lastResponseBn: "কখনো নয়" },
-  { name: "Nasima Akter", nameBn: "নাসিমা আক্তার", village: "Paschim Bazar", villageBn: "পশ্চিম বাজার", phone: "+880 1967-890123", status: "safe", lastResponse: "3 hours ago", lastResponseBn: "৩ ঘণ্টা আগে" },
-  { name: "Jamal Uddin", nameBn: "জামাল উদ্দিন", village: "Purba Ghosh Para", villageBn: "পূর্ব ঘোষ পাড়া", phone: "+880 1778-901234", status: "help", lastResponse: "45 min ago", lastResponseBn: "৪৫ মিনিট আগে" },
-  { name: "Salma Begum", nameBn: "সালমা বেগম", village: "Madhya Gram", villageBn: "মধ্য গ্রাম", phone: "+880 1889-012345", status: "safe", lastResponse: "1 hour ago", lastResponseBn: "১ ঘণ্টা আগে" },
-];
+import { communityResponses } from "../data/mockData";
 
 const statusStyles: Record<string, string> = {
   safe: "bg-green-100 text-green-800",
@@ -89,7 +68,7 @@ export function CommunityStatus() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {responseData.map((person, index) => (
+                  {communityResponses.map((person, index) => (
                     <TableRow key={index}>
                       <TableCell className="font-medium">{d(person.name, person.nameBn)}</TableCell>
                       <TableCell>{d(person.village, person.villageBn)}</TableCell>

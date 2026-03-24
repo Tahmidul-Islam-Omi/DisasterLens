@@ -6,15 +6,7 @@ import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { Checkbox } from "../components/ui/checkbox";
 import { useLanguage } from "../i18n/LanguageContext";
-
-const villages = [
-  { id: "dakshin", nameKey: "village.dakshinPara", members: 428 },
-  { id: "madhya", nameKey: "village.madhyaGram", members: 512 },
-  { id: "char", nameKey: "village.charJanajat", members: 345 },
-  { id: "uttar", nameKey: "village.uttarPara", members: 398 },
-  { id: "paschim", nameKey: "village.paschimBazar", members: 467 },
-  { id: "purba", nameKey: "village.purbaGhoshPara", members: 397 },
-];
+import { villages } from "../data/mockData";
 
 export function CreateAlert() {
   const { t } = useLanguage();

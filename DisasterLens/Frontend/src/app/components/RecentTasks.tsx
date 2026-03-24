@@ -4,36 +4,7 @@ import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { useNavigate } from "react-router";
 import { useLanguage } from "../i18n/LanguageContext";
-
-const recentTasks = [
-  {
-    id: "T001",
-    title: "Deliver relief supplies to Char Janajat",
-    titleBn: "চর জনজাতে ত্রাণ সামগ্রী পৌঁছে দিন",
-    priority: "critical" as const,
-    assignedTo: "Aminul Islam",
-    assignedToBn: "আমিনুল ইসলাম",
-    status: "in-progress" as const,
-  },
-  {
-    id: "T002",
-    title: "Field assessment of flood damage",
-    titleBn: "বন্যার ক্ষয়ক্ষতির মাঠ পর্যায়ের মূল্যায়ন",
-    priority: "high" as const,
-    assignedTo: "Shahida Akter",
-    assignedToBn: "শাহিদা আক্তার",
-    status: "assigned" as const,
-  },
-  {
-    id: "T003",
-    title: "Medical aid camp setup",
-    titleBn: "চিকিৎসা সেবা ক্যাম্প স্থাপন",
-    priority: "critical" as const,
-    assignedTo: "Rahim Uddin",
-    assignedToBn: "রহিম উদ্দিন",
-    status: "in-progress" as const,
-  },
-];
+import { recentTasks } from "../data/mockData";
 
 const priorityStyles: Record<string, string> = {
   critical: "bg-red-100 text-red-800",
