@@ -1,0 +1,20 @@
+https://ffwc.bwdb.gov.bd/data_load/
+https://data.humdata.org/dataset/bangladesh-hazards
+https://ffwc.bwdb.gov.bd/data_load/rainfall-observations/
+
+https://ffwc.bwdb.gov.bd/data_load/water-level-forecasts/
+
+https://www.ffwc.gov.bd/app/home
+
+https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=23.7&lon=90.4
+https://live8.bmd.gov.bd/en/p/Weather-Forecast
+https://live8.bmd.gov.bd/en/p/Divisional-forecast
+
+https://mobile.bmd.gov.bd/bmdmobile/aws/#synop_Air%20Temperature_41923
+
+
+https://unosat-geodrr.cern.ch/apps/BGD/hazard-risk/
+
+https://www.prothomalo.com/bangladesh/environment/ => scrap from this page and get the links that have the word environment in it, and crawl that page and get important data and save it to db if is about disaster. also summarize it and store it in db. 
+
+https://github.com/m3h3d1ha2an/banglageoapi/tree/main/src/json => you will get bangladesh area data such as district, division, union, upazilla names and details from this. this has json that you can download 
