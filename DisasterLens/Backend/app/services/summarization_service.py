@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from app.config.settings import settings
-from app.summarizers.base import SummaryResult, SummarizerAdapter
-from app.summarizers.registry import get_summarizers
+from app.summarizers.providers import SummaryResult, get_summarizers
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

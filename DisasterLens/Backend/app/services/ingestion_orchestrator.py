@@ -8,8 +8,7 @@ import httpx
 from app.config.settings import settings
 from app.db.database import get_database
 from app.services.summarization_service import summarization_service
-from app.sources.contracts import SourceArticle
-from app.sources.registry import get_enabled_sources
+from app.sources.core import SourceArticle, get_enabled_sources
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

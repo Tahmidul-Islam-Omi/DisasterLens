@@ -1,3 +1,3 @@
-from app.summarizers.base import SummaryResult, SummarizerAdapter
+from app.summarizers.providers import SummaryResult, SummarizerAdapter, get_summarizers
 
-__all__ = ["SummaryResult", "SummarizerAdapter"]
+__all__ = ["SummaryResult", "SummarizerAdapter", "get_summarizers"]

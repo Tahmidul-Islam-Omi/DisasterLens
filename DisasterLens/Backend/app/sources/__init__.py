@@ -1,4 +1,3 @@
-from app.sources.base_adapter import SourceAdapter
-from app.sources.contracts import SourceArticle
+from app.sources.core import SourceAdapter, SourceArticle, get_enabled_sources
 
-__all__ = ["SourceAdapter", "SourceArticle"]
+__all__ = ["SourceAdapter", "SourceArticle", "get_enabled_sources"]
