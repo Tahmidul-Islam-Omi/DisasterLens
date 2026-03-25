@@ -5,7 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.settings import settings
 from app.db.database import connect_to_mongo, close_mongo_connection
-from app.routes import health_routes, ingestion_routes, test_routes, volunteer_routes
+from app.routes import auth_routes, authority_routes, health_routes, ingestion_routes, test_routes, volunteer_routes
+from app.services.bootstrap_data_service import ensure_seed_data
 from app.services.ingestion_orchestrator import ingestion_orchestrator
 from app.utils.logger import get_logger
 
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 ╚══════════════════════════════════════════════════════╝"""
     logger.info(banner)
     await connect_to_mongo()
+    await ensure_seed_data()
     worker_task: asyncio.Task | None = None
     if settings.ENABLE_INGESTION_WORKER:
         worker_task = asyncio.create_task(_ingestion_background_worker())
@@ -69,6 +71,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=settings.CORS_ALLOW_ORIGIN_REGEX,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -79,6 +82,8 @@ def create_app() -> FastAPI:
 
     app.include_router(health_routes.router, prefix=api_prefix)
     app.include_router(test_routes.router, prefix=api_prefix)
+    app.include_router(auth_routes.router, prefix=api_prefix)
+    app.include_router(authority_routes.router, prefix=api_prefix)
     app.include_router(ingestion_routes.router, prefix=api_prefix)
     app.include_router(volunteer_routes.router, prefix=api_prefix)
 

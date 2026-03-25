@@ -4,9 +4,10 @@ from datetime import datetime
 from random import randint
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
 from app.db.database import get_database
+from app.security import require_roles
 from app.schemas.volunteer_schema import VolunteerCoverageCreate
 from app.utils.response import APIResponse, success_response
 
@@ -57,6 +58,43 @@ async def get_latest_coverage_updates(limit: int = Query(default=100, ge=1, le=5
     cursor = _coverage_col().find().sort("submitted_at", -1).limit(limit)
     updates = await cursor.to_list(length=limit)
     return success_response("Latest volunteer coverage updates retrieved", [_serialize(doc) for doc in updates])
+
+
+@router.get("/dashboard", response_model=APIResponse, summary="Volunteer dashboard payload")
+async def get_volunteer_dashboard(_: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin"))) -> APIResponse:
+    db = get_database()
+    all_tasks = await db["tasks"].find().to_list(length=None)
+    active_alerts = await db["authority_alerts"].find().to_list(length=None)
+
+    data = {
+        "stats": {
+            "householdsVisited": 42,
+            "householdsTarget": 100,
+            "peopleRescued": 14,
+            "reliefDelivered": 85,
+            "activeAlerts": max(2, len(active_alerts)),
+        },
+        "tasks": [_serialize(task) for task in all_tasks[:5]],
+        "areaAlerts": [
+            {
+                "headline": "Flash Flood Warning",
+                "message": "River levels rising in Zone A. Evacuate low-lying households immediately.",
+                "ago": "15 mins ago",
+            },
+            {
+                "headline": "Road Blockage",
+                "message": "Route 4 collapsed. Use Sector 3 bypass.",
+                "ago": "1 hr ago",
+            },
+        ],
+    }
+    return success_response("Volunteer dashboard payload", data)
+
+
+@router.get("/tasks", response_model=APIResponse, summary="Volunteer tasks")
+async def get_volunteer_tasks(_: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin"))) -> APIResponse:
+    tasks = await get_database()["tasks"].find().to_list(length=None)
+    return success_response("Volunteer tasks", [_serialize(task) for task in tasks])
 
 
 def _serialize(value: Any) -> Any:

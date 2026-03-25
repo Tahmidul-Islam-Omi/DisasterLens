@@ -1,39 +1,81 @@
 import { useLanguage } from '../i18n/LanguageContext';
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { 
-  Users, MapPin, Box, CheckCircle, Activity, Search
+  Users, Activity
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { api } from '../lib/api';
+import { VolunteerCoverageMap, type CoveragePoint } from '../components/VolunteerCoverageMap';
 
-interface Coverage {
+type CoverageApiRow = {
   id: string;
-  name: string;
-  location: string;
-  radius: number;
-  x: number;
-  y: number;
-  timestamp: number;
-}
-
-const mockVolunteers = [
-  { id: 'V01', name: 'Team Alpha', location: 'Sylhet Sadar', status: 'Active', updated: '2m ago' },
-  { id: 'V02', name: 'Team Bravo', location: 'Sunamganj Sector 3', status: 'Distributing', updated: '5m ago' },
-  { id: 'V03', name: 'Team Charlie', location: 'Netrokona East', status: 'Moving', updated: '12m ago' },
-  { id: 'V04', name: 'Team Delta', location: 'Habiganj Center', status: 'Active', updated: '15m ago' },
-  { id: 'V05', name: 'Team Echo', location: 'Moulvibazar Route', status: 'Resting', updated: '1h ago' },
-];
+  location_name: string;
+  radius_km: number;
+  submitted_at: string;
+  location?: {
+    type: string;
+    coordinates: [number, number];
+  };
+  meta?: {
+    team_name?: string;
+  };
+};
 
 export function VolunteerCoverageView() {
   const { t } = useLanguage();
-  const [dynamicCoverages, setDynamicCoverages] = useState<Coverage[]>([]);
+  const { token } = useAuth();
+  const [coverages, setCoverages] = useState<CoverageApiRow[]>([]);
+  const [query, setQuery] = useState('');
+  const [teamFilter, setTeamFilter] = useState('all');
+  const [recenterSignal, setRecenterSignal] = useState(0);
 
   useEffect(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem('volunteer_coverages') || '[]');
-      setDynamicCoverages(stored);
-    } catch (e) {
-      console.error(e);
-    }
+    const loadCoverage = async () => {
+      try {
+        const data = await api.get<CoverageApiRow[]>('/volunteer/coverage-updates/latest?limit=200', token);
+        setCoverages(data);
+      } catch (error) {
+        console.error('Failed to load volunteer coverage updates', error);
+      }
+    };
+    void loadCoverage();
   }, []);
+
+  const points = useMemo<CoveragePoint[]>(() => {
+    return coverages
+      .filter((row) => row.location?.coordinates?.length === 2)
+      .map((row) => ({
+        id: row.id,
+        teamName: row.meta?.team_name || 'Volunteer Team',
+        locationName: row.location_name,
+        lng: row.location!.coordinates[0],
+        lat: row.location!.coordinates[1],
+        radiusKm: row.radius_km,
+        submittedAt: row.submitted_at,
+      }));
+  }, [coverages]);
+
+  const teamOptions = useMemo(() => {
+    const teams = Array.from(new Set(points.map((point) => point.teamName))).sort();
+    return teams;
+  }, [points]);
+
+  const filteredPoints = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    return points.filter((point) => {
+      const byTeam = teamFilter === 'all' || point.teamName === teamFilter;
+      const byQuery =
+        term.length === 0 ||
+        point.teamName.toLowerCase().includes(term) ||
+        point.locationName.toLowerCase().includes(term);
+      return byTeam && byQuery;
+    });
+  }, [points, query, teamFilter]);
+
+  const uniqueLocations = new Set(filteredPoints.map((point) => point.locationName)).size;
+  const avgRadius = filteredPoints.length
+    ? (filteredPoints.reduce((sum, point) => sum + point.radiusKm, 0) / filteredPoints.length).toFixed(1)
+    : '0';
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-[#F8FAFC]">
@@ -58,19 +100,51 @@ export function VolunteerCoverageView() {
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
               <p className="text-xs text-gray-500 font-medium uppercase mb-1">{t('active_teams')}</p>
-              <p className="text-2xl font-bold text-[#1E3A8A]">45</p>
+              <p className="text-2xl font-bold text-[#1E3A8A]">{filteredPoints.length}</p>
             </div>
             <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
               <p className="text-xs text-gray-500 font-medium uppercase mb-1">{t('villages')}</p>
-              <p className="text-2xl font-bold text-gray-900">128</p>
+              <p className="text-2xl font-bold text-gray-900">{uniqueLocations}</p>
             </div>
             <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
               <p className="text-xs text-gray-500 font-medium uppercase mb-1">{t('coverage')}</p>
-              <p className="text-2xl font-bold text-green-600">62%</p>
+              <p className="text-2xl font-bold text-green-600">{avgRadius}km</p>
             </div>
             <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
               <p className="text-xs text-gray-500 font-medium uppercase mb-1">{t('relief_kits')}</p>
-              <p className="text-2xl font-bold text-amber-600">8.5k</p>
+              <p className="text-2xl font-bold text-amber-600">{filteredPoints.length}</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+            <p className="mb-3 text-xs font-semibold uppercase text-gray-500">Filters</p>
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search team or location"
+                title="Search team or location"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-300"
+              />
+              <select
+                value={teamFilter}
+                onChange={(event) => setTeamFilter(event.target.value)}
+                title="Filter by team"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-300"
+              >
+                <option value="all">All teams</option>
+                {teamOptions.map((team) => (
+                  <option key={team} value={team}>{team}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="w-full rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                onClick={() => setRecenterSignal((value) => value + 1)}
+              >
+                Recenter to visible coverage
+              </button>
             </div>
           </div>
 
@@ -83,146 +157,21 @@ export function VolunteerCoverageView() {
               </h3>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {dynamicCoverages.slice().reverse().map(cov => (
+              {filteredPoints.slice(0, 12).map((cov) => (
                 <div key={`update-${cov.id}`} className="border-l-2 border-green-500 pl-3">
-                  <p className="text-xs text-gray-500 mb-0.5">{cov.name} • {new Date(cov.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                  <p className="text-sm text-gray-800 font-medium">{t('coverage_radius_msg', { location: cov.location, radius: cov.radius })}</p>
+                  <p className="text-xs text-gray-500 mb-0.5">
+                    {cov.teamName} • {cov.submittedAt ? new Date(cov.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : t('just_now')}
+                  </p>
+                  <p className="text-sm text-gray-800 font-medium">{t('coverage_radius_msg', { location: cov.locationName, radius: cov.radiusKm })}</p>
                 </div>
               ))}
-              <div className="border-l-2 border-green-500 pl-3">
-                <p className="text-xs text-gray-500 mb-0.5">Team Alpha • {t('just_now')}</p>
-                <p className="text-sm text-gray-800 font-medium">{t('update_msg_alpha')}</p>
-              </div>
-              <div className="border-l-2 border-blue-500 pl-3">
-                <p className="text-xs text-gray-500 mb-0.5">Team Bravo • 5 {t('mins_ago')}</p>
-                <p className="text-sm text-gray-800 font-medium">{t('update_msg_bravo')}</p>
-              </div>
-              <div className="border-l-2 border-amber-500 pl-3">
-                <p className="text-xs text-gray-500 mb-0.5">Team Charlie • 12 {t('mins_ago')}</p>
-                <p className="text-sm text-gray-800 font-medium">{t('update_msg_charlie')}</p>
-              </div>
-              <div className="border-l-2 border-green-500 pl-3">
-                <p className="text-xs text-gray-500 mb-0.5">Team Delta • 15 {t('mins_ago')}</p>
-                <p className="text-sm text-gray-800 font-medium">{t('update_msg_delta')}</p>
-              </div>
             </div>
           </div>
         </div>
 
         {/* Map View */}
-        <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col relative overflow-hidden">
-          {/* Map Controls */}
-          <div className="absolute top-4 left-4 z-10 flex gap-2">
-            <div className="bg-white rounded-lg shadow-md border border-gray-200 flex overflow-hidden">
-              <button className="px-4 py-2 text-sm font-medium bg-blue-50 text-blue-700 border-r border-gray-200">{t('coverage_map')}</button>
-              <button className="px-4 py-2 text-sm font-medium hover:bg-gray-50 text-gray-600">{t('relief_points')}</button>
-            </div>
-          </div>
-
-          <div className="absolute top-4 right-4 z-10">
-            <div className="bg-white rounded-lg shadow-md border border-gray-200 p-3 space-y-2">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-green-500 opacity-50"></div>
-                <span className="text-xs font-medium text-gray-700">{t('covered_area')}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-red-500 opacity-20"></div>
-                <span className="text-xs font-medium text-gray-700">{t('uncovered_target')}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <MapPin className="w-3 h-3 text-blue-600" />
-                <span className="text-xs font-medium text-gray-700">{t('volunteer_unit')}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Interactive Simulated Map */}
-          <div className="w-full h-full bg-[#E2E8F0] relative">
-            <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <pattern id="mapGrid" width="60" height="60" patternUnits="userSpaceOnUse">
-                  <path d="M 60 0 L 0 0 0 60" fill="none" stroke="#CBD5E1" strokeWidth="1"/>
-                </pattern>
-                
-                <radialGradient id="coverageGradient" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
-                  <stop offset="0%" stopColor="#22C55E" stopOpacity="0.6"/>
-                  <stop offset="100%" stopColor="#22C55E" stopOpacity="0.1"/>
-                </radialGradient>
-              </defs>
-              
-              <rect width="100%" height="100%" fill="url(#mapGrid)" />
-              
-              {/* Regions/Villages boundaries (mock) */}
-              <path d="M 100 100 Q 200 50 300 150 T 500 200 Q 600 300 400 400 T 200 300 Z" fill="#DC2626" fillOpacity="0.05" stroke="#DC2626" strokeWidth="2" strokeDasharray="5,5" />
-              <path d="M 400 100 Q 500 50 650 150 T 800 300 Q 700 400 600 350 T 400 250 Z" fill="#1E3A8A" fillOpacity="0.05" stroke="#1E3A8A" strokeWidth="2" strokeDasharray="5,5" />
-
-              {/* Coverage areas based on updates */}
-              <circle cx="250" cy="200" r="80" fill="url(#coverageGradient)" />
-              <circle cx="550" cy="250" r="100" fill="url(#coverageGradient)" />
-              <circle cx="350" cy="350" r="60" fill="url(#coverageGradient)" />
-              
-              {/* Dynamic coverage areas from localStorage */}
-              {dynamicCoverages.map(cov => (
-                <circle key={`circle-${cov.id}`} cx={cov.x} cy={cov.y} r={cov.radius * 15} fill="url(#coverageGradient)" />
-              ))}
-            </svg>
-
-            {/* Dynamic Live Units from localStorage */}
-            {dynamicCoverages.map(cov => (
-              <div key={`marker-${cov.id}`} className="absolute group cursor-pointer" style={{ top: `${cov.y - 12}px`, left: `${cov.x - 12}px` }}>
-                <div className="w-12 h-12 rounded-full bg-blue-500 opacity-20 absolute -top-3 -left-3 animate-ping"></div>
-                <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center shadow-lg border-2 border-white relative z-10">
-                  <Users className="w-3 h-3 text-white" />
-                </div>
-                <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-2 py-1 rounded text-[10px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-20">
-                  {cov.name}<br/>{cov.location}
-                </div>
-              </div>
-            ))}
-
-            {/* Live Units */}
-            <div className="absolute top-[180px] left-[230px] group cursor-pointer">
-              <div className="w-12 h-12 rounded-full bg-blue-500 opacity-20 absolute -top-3 -left-3 animate-ping"></div>
-              <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center shadow-lg border-2 border-white relative z-10">
-                <Users className="w-3 h-3 text-white" />
-              </div>
-              <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-2 py-1 rounded text-[10px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
-                Team Alpha<br/>Active Distribution
-              </div>
-            </div>
-
-            <div className="absolute top-[230px] left-[530px] group cursor-pointer">
-              <div className="w-12 h-12 rounded-full bg-blue-500 opacity-20 absolute -top-3 -left-3 animate-ping"></div>
-              <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center shadow-lg border-2 border-white relative z-10">
-                <Users className="w-3 h-3 text-white" />
-              </div>
-              <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-2 py-1 rounded text-[10px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
-                Team Bravo<br/>Moving
-              </div>
-            </div>
-            
-            {/* Relief Point */}
-            <div className="absolute top-[340px] left-[340px] group cursor-pointer">
-              <div className="w-8 h-8 rounded bg-amber-500 flex items-center justify-center shadow-lg border-2 border-white relative z-10 transform rotate-45">
-                <Box className="w-4 h-4 text-white -rotate-45" />
-              </div>
-              <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-2 py-1 rounded text-[10px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
-                Supply Hub<br/>Sector 4
-              </div>
-            </div>
-
-            {/* Household Visits */}
-            <div className="absolute top-[170px] left-[200px]">
-              <CheckCircle className="w-4 h-4 text-green-600 bg-white rounded-full" />
-            </div>
-            <div className="absolute top-[190px] left-[210px]">
-              <CheckCircle className="w-4 h-4 text-green-600 bg-white rounded-full" />
-            </div>
-            <div className="absolute top-[210px] left-[260px]">
-              <CheckCircle className="w-4 h-4 text-green-600 bg-white rounded-full" />
-            </div>
-
-          </div>
+        <div className="flex-1">
+          <VolunteerCoverageMap points={filteredPoints} recenterSignal={recenterSignal} />
         </div>
 
       </div>

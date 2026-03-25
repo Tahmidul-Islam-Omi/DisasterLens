@@ -1,12 +1,13 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { toast } from 'sonner';
 import type { User, AuthState, LoginCredentials, SignupData } from '../types';
+import { api } from '../lib/api';
 
 interface AuthContextType extends AuthState {
-  login: (credentials: LoginCredentials) => Promise<void>;
+  login: (credentials: LoginCredentials) => Promise<User>;
   signup: (data: SignupData) => Promise<void>;
   logout: () => void;
-  checkAuth: () => void;
+  checkAuth: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -18,59 +19,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAuthenticated: false,
     user: null,
     token: null,
+    isLoading: true,
   });
 
   // Check for existing auth on mount
   useEffect(() => {
-    checkAuth();
+    void checkAuth();
   }, []);
 
-  const checkAuth = () => {
+  const checkAuth = async () => {
     try {
       const storedAuth = localStorage.getItem(AUTH_STORAGE_KEY);
       if (storedAuth) {
         const parsedAuth: AuthState = JSON.parse(storedAuth);
-        // Validate that the stored data has required fields
         if (parsedAuth.token && parsedAuth.user) {
-          setAuthState(parsedAuth);
+          const user = await api.get<User>('/auth/me', parsedAuth.token);
+          const restored: AuthState = {
+            isAuthenticated: true,
+            user,
+            token: parsedAuth.token,
+            isLoading: false,
+          };
+          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(restored));
+          setAuthState(restored);
+          return;
         } else {
-          // Invalid stored data, clear it
           localStorage.removeItem(AUTH_STORAGE_KEY);
         }
       }
+
+      setAuthState({
+        isAuthenticated: false,
+        user: null,
+        token: null,
+        isLoading: false,
+      });
     } catch (error) {
       console.error('Error checking auth:', error);
       localStorage.removeItem(AUTH_STORAGE_KEY);
+      setAuthState({
+        isAuthenticated: false,
+        user: null,
+        token: null,
+        isLoading: false,
+      });
     }
   };
 
-  const login = async (credentials: LoginCredentials): Promise<void> => {
+  const login = async (credentials: LoginCredentials): Promise<User> => {
     try {
-      // TODO: Replace with actual API call
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // Mock user data - replace with actual API response
-      const mockUser: User = {
-        id: '1',
-        name: 'Test User',
-        nameBn: 'টেস্ট ইউজার',
+      const authPayload = await api.post<{ access_token: string; user: User }>('/auth/login', {
         email: credentials.email,
-        role: credentials.role,
-        avatar: undefined,
-      };
-
-      const mockToken = 'mock-jwt-token-' + Date.now();
+        password: credentials.password,
+      });
 
       const newAuthState: AuthState = {
         isAuthenticated: true,
-        user: mockUser,
-        token: mockToken,
+        user: authPayload.user,
+        token: authPayload.access_token,
+        isLoading: false,
       };
 
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newAuthState));
       setAuthState(newAuthState);
       
       toast.success('Login successful');
+      return authPayload.user;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Invalid credentials';
       toast.error(errorMessage);
@@ -90,28 +104,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error('Password must be at least 8 characters');
       }
 
-      // TODO: Replace with actual API call
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // Mock user data - replace with actual API response
-      const mockUser: User = {
-        id: Date.now().toString(),
+      const authPayload = await api.post<{ access_token: string; user: User }>('/auth/register', {
         name: data.name,
         nameBn: data.nameBn,
         email: data.email,
         phone: data.phone,
+        password: data.password,
         role: data.role,
-        avatar: undefined,
         assignedArea: data.assignedArea,
         assignedAreaBn: data.assignedAreaBn,
-      };
-
-      const mockToken = 'mock-jwt-token-' + Date.now();
+      });
 
       const newAuthState: AuthState = {
         isAuthenticated: true,
-        user: mockUser,
-        token: mockToken,
+        user: authPayload.user,
+        token: authPayload.access_token,
+        isLoading: false,
       };
 
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newAuthState));
@@ -131,6 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: false,
       user: null,
       token: null,
+      isLoading: false,
     });
     toast.success('Logged out successfully');
   };

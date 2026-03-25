@@ -1,19 +1,50 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, X, Send, AlertCircle, ChevronDown } from 'lucide-react';
 import { useLanguage } from '../i18n/LanguageContext';
-import { mockQueries } from '../data/mockData';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
+
+type QueryItem = {
+  id: string;
+  senderName: string;
+  senderNameBn: string;
+  role: string;
+  roleBn: string;
+  message: string;
+  messageBn: string;
+  timeSubmitted: string;
+  timeSubmittedBn: string;
+  priority: string;
+  answered: boolean;
+  response?: string;
+  responseBn?: string;
+};
 
 export function QueriesView() {
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+  const [queries, setQueries] = useState<QueryItem[]>([]);
   const [selectedFilter, setSelectedFilter] = useState<string>('All Queries');
-  const [selectedQuery, setSelectedQuery] = useState<typeof mockQueries[0] | null>(null);
+  const [selectedQuery, setSelectedQuery] = useState<QueryItem | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [replyText, setReplyText] = useState('');
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
 
   const filterOptions = [t('all_queries'), t('local_authorities'), t('volunteers'), t('community_members')];
 
-  const filteredQueries = mockQueries.filter((query) => {
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<QueryItem[]>('/authority/queries', token);
+        setQueries(data);
+      } catch (error) {
+        console.error('Failed to load queries', error);
+      }
+    };
+    void loadData();
+  }, []);
+
+  const filteredQueries = queries.filter((query) => {
     const matchesFilter = 
       selectedFilter === t('all_queries') ||
       (selectedFilter === t('local_authorities') && query.role === 'Local Authority') ||
@@ -27,10 +58,13 @@ export function QueriesView() {
     return matchesFilter && matchesSearch;
   });
 
-  const handleSendReply = () => {
+  const handleSendReply = async () => {
     if (replyText.trim()) {
-      // Handle sending reply
-      console.log('Sending reply:', replyText);
+      if (selectedQuery) {
+        await api.post(`/authority/queries/${selectedQuery.id}/reply`, { response: replyText, responseBn: replyText }, token);
+        const data = await api.get<QueryItem[]>('/authority/queries', token);
+        setQueries(data);
+      }
       setReplyText('');
       setSelectedQuery(null);
     }
@@ -187,6 +221,8 @@ export function QueriesView() {
               <button
                 onClick={() => setSelectedQuery(null)}
                 className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                title={t('close')}
+                aria-label={t('close')}
               >
                 <X className="w-5 h-5 text-gray-500" />
               </button>

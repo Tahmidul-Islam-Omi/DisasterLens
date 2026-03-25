@@ -1,5 +1,6 @@
 import { Users, UserPlus, ClipboardList, MapPin } from "lucide-react";
 import { useState } from "react";
+import { useEffect } from "react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import {
@@ -8,7 +9,9 @@ import {
 import { Badge } from "../components/ui/badge";
 import { AddVolunteerDialog } from "../components/AddVolunteerDialog";
 import { useLanguage } from "../i18n/LanguageContext";
-import { volunteers } from "../data/mockData";
+import type { Volunteer } from "../types";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
 
 const statusStyleMap: Record<string, string> = {
   active: "bg-green-100 text-green-800",
@@ -24,7 +27,31 @@ const statusKeyMap: Record<string, string> = {
 
 export function VolunteerManagementView() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+
+  const loadVolunteers = async () => {
+    try {
+      const data = await api.get<Volunteer[]>("/authority/volunteers", token);
+      setVolunteers(data);
+    } catch (error) {
+      console.error("Failed to load volunteers", error);
+    }
+  };
+
+  useEffect(() => {
+    void loadVolunteers();
+  }, []);
+
+  const handleAddVolunteer = async (payload: Record<string, unknown>) => {
+    await api.post<Volunteer>("/authority/volunteers", payload, token);
+    await loadVolunteers();
+  };
+
+  const activeCount = volunteers.filter((v) => v.status === "active").length;
+  const availableCount = volunteers.filter((v) => v.status === "available").length;
+  const tasksCompleted = volunteers.reduce((sum, item) => sum + (item.tasksCompleted || 0), 0);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -42,7 +69,7 @@ export function VolunteerManagementView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("volunteer.totalVolunteers")}</p>
-                  <p className="text-3xl font-semibold text-gray-900">24</p>
+                  <p className="text-3xl font-semibold text-gray-900">{volunteers.length}</p>
                 </div>
                 <div className="p-3 bg-blue-100 rounded-lg"><Users className="w-6 h-6 text-blue-700" /></div>
               </div>
@@ -51,7 +78,7 @@ export function VolunteerManagementView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("status.activeInField")}</p>
-                  <p className="text-3xl font-semibold text-green-700">16</p>
+                  <p className="text-3xl font-semibold text-green-700">{activeCount}</p>
                 </div>
                 <div className="p-3 bg-green-100 rounded-lg"><MapPin className="w-6 h-6 text-green-700" /></div>
               </div>
@@ -60,7 +87,7 @@ export function VolunteerManagementView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("status.available")}</p>
-                  <p className="text-3xl font-semibold text-blue-700">5</p>
+                  <p className="text-3xl font-semibold text-blue-700">{availableCount}</p>
                 </div>
                 <div className="p-3 bg-blue-100 rounded-lg"><UserPlus className="w-6 h-6 text-blue-700" /></div>
               </div>
@@ -69,7 +96,7 @@ export function VolunteerManagementView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("volunteer.tasksCompleted")}</p>
-                  <p className="text-3xl font-semibold text-gray-900">164</p>
+                  <p className="text-3xl font-semibold text-gray-900">{tasksCompleted}</p>
                 </div>
                 <div className="p-3 bg-orange-100 rounded-lg"><ClipboardList className="w-6 h-6 text-orange-700" /></div>
               </div>
@@ -99,8 +126,8 @@ export function VolunteerManagementView() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {volunteers.map((volunteer, index) => (
-                    <TableRow key={index}>
+                  {volunteers.map((volunteer) => (
+                    <TableRow key={volunteer.id}>
                       <TableCell className="font-medium">{d(volunteer.name, volunteer.nameBn)}</TableCell>
                       <TableCell className="text-gray-600">{volunteer.phone}</TableCell>
                       <TableCell>{d(volunteer.assignedArea, volunteer.assignedAreaBn)}</TableCell>
@@ -119,7 +146,7 @@ export function VolunteerManagementView() {
         </Card>
       </main>
 
-      <AddVolunteerDialog open={isDialogOpen} onOpenChange={setIsDialogOpen} />
+      <AddVolunteerDialog open={isDialogOpen} onOpenChange={setIsDialogOpen} onSubmit={handleAddVolunteer} />
     </div>
   );
 }

@@ -18,8 +18,17 @@ interface ProtectedRouteProps {
  * - If user has permission → render children
  */
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, isLoading } = useAuth();
   const location = useLocation();
+
+  // Wait for auth restoration to finish before deciding redirect.
+  if (isLoading) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center text-sm text-gray-600">
+        Loading session...
+      </div>
+    );
+  }
 
   // Not authenticated - redirect to login with return URL
   if (!isAuthenticated) {

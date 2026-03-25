@@ -1,4 +1,5 @@
 import { Users, Download, Search, Filter } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -7,10 +8,26 @@ import {
 } from "../components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { useLanguage } from "../i18n/LanguageContext";
-import { members } from "../data/mockData";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+import type { Member } from "../types";
 
 export function MemberListView() {
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+  const [members, setMembers] = useState<Member[]>([]);
+
+  useEffect(() => {
+    const loadMembers = async () => {
+      try {
+        const data = await api.get<Member[]>("/authority/members", token);
+        setMembers(data);
+      } catch (error) {
+        console.error("Failed to load members", error);
+      }
+    };
+    void loadMembers();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -28,7 +45,7 @@ export function MemberListView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("member.totalMembers")}</p>
-                  <p className="text-3xl font-semibold text-gray-900">2,547</p>
+                  <p className="text-3xl font-semibold text-gray-900">{members.length}</p>
                 </div>
                 <div className="p-3 bg-blue-100 rounded-lg"><Users className="w-6 h-6 text-blue-700" /></div>
               </div>
@@ -37,7 +54,7 @@ export function MemberListView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("member.totalHouseholds")}</p>
-                  <p className="text-3xl font-semibold text-gray-900">612</p>
+                  <p className="text-3xl font-semibold text-gray-900">{Math.max(0, Math.ceil(members.length / 4))}</p>
                 </div>
                 <div className="p-3 bg-green-100 rounded-lg"><Users className="w-6 h-6 text-green-700" /></div>
               </div>
@@ -46,7 +63,7 @@ export function MemberListView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("member.villages")}</p>
-                  <p className="text-3xl font-semibold text-gray-900">6</p>
+                  <p className="text-3xl font-semibold text-gray-900">{new Set(members.map((item) => item.village)).size}</p>
                 </div>
                 <div className="p-3 bg-orange-100 rounded-lg"><Users className="w-6 h-6 text-orange-700" /></div>
               </div>
@@ -55,7 +72,7 @@ export function MemberListView() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 mb-1">{t("member.registeredPhones")}</p>
-                  <p className="text-3xl font-semibold text-gray-900">1,823</p>
+                  <p className="text-3xl font-semibold text-gray-900">{members.filter((item) => Boolean(item.phone)).length}</p>
                 </div>
                 <div className="p-3 bg-purple-100 rounded-lg"><Users className="w-6 h-6 text-purple-700" /></div>
               </div>

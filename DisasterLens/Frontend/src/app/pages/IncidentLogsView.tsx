@@ -1,13 +1,44 @@
 import { useLanguage } from '../i18n/LanguageContext';
-import { mockIncidents } from '../data/mockData';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Filter, Search, AlertCircle, MapPin, Clock, ShieldCheck, FileWarning, ArrowUpRight, Activity
 } from 'lucide-react';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
+
+type Incident = {
+  id: string;
+  type: string;
+  typeBn: string;
+  location: string;
+  locationBn: string;
+  timeReported: string;
+  timeReportedBn: string;
+  source: string;
+  sourceBn: string;
+  verified: boolean;
+  status: string;
+  severity: string;
+};
 
 export function IncidentLogsView() {
   const { t, d } = useLanguage();
-  const [selectedIncident, setSelectedIncident] = useState(mockIncidents[0]);
+  const { token } = useAuth();
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<Incident[]>('/authority/incidents', token);
+        setIncidents(data);
+        setSelectedIncident(data[0] || null);
+      } catch (error) {
+        console.error('Failed to load incidents', error);
+      }
+    };
+    void loadData();
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-[#F8FAFC]">
@@ -58,7 +89,7 @@ export function IncidentLogsView() {
 
           {/* List */}
           <div className="flex-1 overflow-y-auto">
-            {mockIncidents.map((incident) => (
+            {incidents.map((incident) => (
               <div 
                 key={incident.id}
                 onClick={() => setSelectedIncident(incident)}
@@ -111,7 +142,7 @@ export function IncidentLogsView() {
                   <h3 className="text-lg font-bold text-gray-900 mb-1">{d(selectedIncident.type, selectedIncident.typeBn)}</h3>
                   <p className="font-mono text-sm text-gray-500">{selectedIncident.id}</p>
                 </div>
-                <button className="p-2 text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors">
+                <button className="p-2 text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors" title={t('view')} aria-label={t('view')}>
                   <ArrowUpRight className="w-5 h-5" />
                 </button>
               </div>

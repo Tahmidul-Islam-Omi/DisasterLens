@@ -1,4 +1,5 @@
 import { Users, ShieldCheck, AlertCircle, Siren, UserX, Search } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { StatusCard } from "../components/StatusCard";
@@ -7,7 +8,17 @@ import {
 } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
 import { useLanguage } from "../i18n/LanguageContext";
-import { communityResponses } from "../data/mockData";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+import type { CommunityResponse } from "../types";
+
+type AuthorityOverview = {
+  totalCommunityMembers: number;
+  reportedSafe: number;
+  needHelp: number;
+  needRescue: number;
+  noResponse: number;
+};
 
 const statusStyles: Record<string, string> = {
   safe: "bg-green-100 text-green-800",
@@ -25,6 +36,32 @@ const statusKeys: Record<string, string> = {
 
 export function CommunityResponseListView() {
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+  const [communityResponses, setCommunityResponses] = useState<CommunityResponse[]>([]);
+  const [overview, setOverview] = useState<AuthorityOverview>({
+    totalCommunityMembers: 0,
+    reportedSafe: 0,
+    needHelp: 0,
+    needRescue: 0,
+    noResponse: 0,
+  });
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [responses, overviewData] = await Promise.all([
+          api.get<CommunityResponse[]>("/authority/community-responses", token),
+          api.get<AuthorityOverview>("/authority/dashboard/overview", token),
+        ]);
+        setCommunityResponses(responses);
+        setOverview(overviewData);
+      } catch (error) {
+        console.error("Failed to load community responses", error);
+      }
+    };
+
+    void load();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -38,11 +75,11 @@ export function CommunityResponseListView() {
       <main className="px-8 py-8">
         <section className="mb-8">
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-            <StatusCard title={t("dashboard.totalCommunityMembers")} value={2547} icon={Users} variant="default" />
-            <StatusCard title={t("status.reportedSafe")} value={1351} icon={ShieldCheck} variant="success" />
-            <StatusCard title={t("status.needHelp")} value={49} icon={AlertCircle} variant="warning" />
-            <StatusCard title={t("status.needRescue")} value={6} icon={Siren} variant="danger" />
-            <StatusCard title={t("status.noResponse")} value={828} icon={UserX} variant="default" />
+            <StatusCard title={t("dashboard.totalCommunityMembers")} value={overview.totalCommunityMembers} icon={Users} variant="default" />
+            <StatusCard title={t("status.reportedSafe")} value={overview.reportedSafe} icon={ShieldCheck} variant="success" />
+            <StatusCard title={t("status.needHelp")} value={overview.needHelp} icon={AlertCircle} variant="warning" />
+            <StatusCard title={t("status.needRescue")} value={overview.needRescue} icon={Siren} variant="danger" />
+            <StatusCard title={t("status.noResponse")} value={overview.noResponse} icon={UserX} variant="default" />
           </div>
         </section>
 

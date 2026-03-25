@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ClipboardList, Plus, Filter, Search } from "lucide-react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -7,18 +7,57 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { TaskCard } from "../components/TaskCard";
 import { AssignTaskDialog } from "../components/AssignTaskDialog";
 import { useLanguage } from "../i18n/LanguageContext";
-import { mockTasks } from "../data/mockData";
 import type { Task } from "../types";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
 
 export function TaskManagementView() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [volunteerOptions, setVolunteerOptions] = useState<Array<{ id: string; name: string; nameBn: string; status: string }>>([]);
   const { t, d } = useLanguage();
+  const { token } = useAuth();
 
-  const activeTasks = mockTasks.filter(task => ["assigned", "in-progress"].includes(task.status));
-  const pendingTasks = mockTasks.filter(task => task.status === "pending");
-  const completedTasks = mockTasks.filter(task => task.status === "completed");
-  const overdueTasks = mockTasks.filter(task => task.status === "overdue");
+  const loadTasks = async () => {
+    try {
+      const data = await api.get<Task[]>("/authority/tasks", token);
+      setTasks(data);
+    } catch (error) {
+      console.error("Failed to load tasks", error);
+    }
+  };
+
+  const loadVolunteers = async () => {
+    try {
+      const data = await api.get<Array<{ id: string; name: string; nameBn?: string; status: string }>>("/authority/volunteers", token);
+      setVolunteerOptions(
+        data.map((v) => ({
+          id: v.id,
+          name: v.name,
+          nameBn: v.nameBn || v.name,
+          status: v.status,
+        })),
+      );
+    } catch (error) {
+      console.error("Failed to load volunteers", error);
+    }
+  };
+
+  useEffect(() => {
+    void loadTasks();
+    void loadVolunteers();
+  }, []);
+
+  const activeTasks = tasks.filter(task => ["assigned", "in-progress"].includes(task.status));
+  const pendingTasks = tasks.filter(task => task.status === "pending");
+  const completedTasks = tasks.filter(task => task.status === "completed");
+  const overdueTasks = tasks.filter(task => task.status === "overdue");
+  const handleCreateTask = async (payload: Record<string, unknown>) => {
+    await api.post<Task>("/authority/tasks", payload, token);
+    await loadTasks();
+  };
+
 
   const translateTask = (task: Task) => ({
     ...task,
@@ -112,7 +151,7 @@ export function TaskManagementView() {
                 <TabsTrigger value="pending">{t("status.pending")} ({pendingTasks.length})</TabsTrigger>
                 <TabsTrigger value="completed">{t("status.completed")} ({completedTasks.length})</TabsTrigger>
                 <TabsTrigger value="overdue">{t("status.overdue")} ({overdueTasks.length})</TabsTrigger>
-                <TabsTrigger value="all">{t("task.all")} ({mockTasks.length})</TabsTrigger>
+                <TabsTrigger value="all">{t("task.all")} ({tasks.length})</TabsTrigger>
               </TabsList>
 
               <TabsContent value="active" className="space-y-3">
@@ -128,14 +167,19 @@ export function TaskManagementView() {
                 {overdueTasks.map((task) => <TaskCard key={task.id} task={translateTask(task)} />)}
               </TabsContent>
               <TabsContent value="all" className="space-y-3">
-                {mockTasks.map((task) => <TaskCard key={task.id} task={translateTask(task)} />)}
+                {tasks.map((task) => <TaskCard key={task.id} task={translateTask(task)} />)}
               </TabsContent>
             </Tabs>
           </div>
         </Card>
       </main>
 
-      <AssignTaskDialog open={isDialogOpen} onOpenChange={setIsDialogOpen} />
+      <AssignTaskDialog
+        open={isDialogOpen}
+        onOpenChange={setIsDialogOpen}
+        onSubmit={handleCreateTask}
+        volunteerOptions={volunteerOptions}
+      />
     </div>
   );
 }

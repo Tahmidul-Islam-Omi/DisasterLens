@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { 
   AlertTriangle, 
   Info, 
@@ -12,7 +12,7 @@ import { useNavigate } from 'react-router';
 import { useLanguage } from '../i18n/LanguageContext';
 import { useAuth } from '../contexts/AuthContext';
 import { hasRoutePermission } from '../config/permissions';
-import { mockWeatherAlerts } from '../data/mockData';
+import { api } from '../lib/api';
 
 type SeverityType = 'emergency' | 'warning' | 'information';
 
@@ -24,14 +24,39 @@ const severityConfig = {
 
 export function WeatherAlertsView() {
   const [selectedDate, setSelectedDate] = useState('2024-01-15');
+  const [alerts, setAlerts] = useState<Array<{
+    id: string;
+    headline: string;
+    headlineBn: string;
+    description: string;
+    descriptionBn: string;
+    severity: SeverityType;
+    region: string;
+    regionBn: string;
+    timeIssued: string;
+    timeIssuedBn: string;
+    publishedDate: string;
+  }>>([]);
   const navigate = useNavigate();
   const { t, d } = useLanguage();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
 
   // Check if user can create alerts
   const canCreateAlert = user && hasRoutePermission('/create-alert', user.role);
 
-  const filteredAlerts = mockWeatherAlerts.filter(alert => alert.publishedDate === selectedDate);
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<typeof alerts>('/authority/weather-alerts', token);
+        setAlerts(data);
+      } catch (error) {
+        console.error('Failed to load weather alerts', error);
+      }
+    };
+    void loadData();
+  }, []);
+
+  const filteredAlerts = alerts.filter((alert) => alert.publishedDate === selectedDate);
 
   const getSeverityStats = () => {
     return {

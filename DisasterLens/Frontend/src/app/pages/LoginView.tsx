@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -12,14 +12,22 @@ export function LoginView() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string>('');
   
-  const { login, signup } = useAuth();
+  const { login, signup, isAuthenticated, user, isLoading: isAuthLoading } = useAuth();
   const { t, lang } = useLanguage();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!isAuthLoading && isAuthenticated && user) {
+      const defaultRoute = user.role === 'Admin' ? '/' :
+        user.role === 'LocalAuthority' ? '/volunteer-coverage' :
+        '/volunteer-dashboard';
+      navigate(defaultRoute, { replace: true });
+    }
+  }, [isAuthLoading, isAuthenticated, user, navigate]);
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [loginRole, setLoginRole] = useState<Role>('Volunteer');
 
   // Signup form state
   const [signupName, setSignupName] = useState('');
@@ -38,11 +46,11 @@ export function LoginView() {
     setIsLoading(true);
 
     try {
-      await login({ email: loginEmail, password: loginPassword, role: loginRole });
+      const user = await login({ email: loginEmail, password: loginPassword });
       
       // Redirect to role-specific dashboard
-      const defaultRoute = loginRole === 'Admin' ? '/' : 
-                          loginRole === 'LocalAuthority' ? '/volunteer-coverage' : 
+      const defaultRoute = user.role === 'Admin' ? '/' : 
+                          user.role === 'LocalAuthority' ? '/volunteer-coverage' : 
                           '/volunteer-dashboard';
       navigate(defaultRoute);
     } catch (err) {
@@ -185,26 +193,6 @@ export function LoginView() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
                 />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {t('select_role')}
-                </label>
-                <select
-                  value={loginRole}
-                  onChange={(e) => setLoginRole(e.target.value as Role)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="Volunteer">{t('role_volunteer')}</option>
-                  <option value="LocalAuthority">{t('role_local_authority')}</option>
-                  <option value="Admin">{t('role_admin')}</option>
-                </select>
-                <p className="text-xs text-gray-500 mt-1">
-                  {loginRole === 'Admin' && t('role_admin_desc')}
-                  {loginRole === 'LocalAuthority' && t('role_local_authority_desc')}
-                  {loginRole === 'Volunteer' && t('role_volunteer_desc')}
-                </p>
               </div>
 
               <button

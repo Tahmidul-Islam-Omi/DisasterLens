@@ -33,7 +33,7 @@ export const ROUTE_PERMISSIONS: Record<string, Role[]> = {
   '/missing-persons': ['Volunteer', 'LocalAuthority'],
   
   // LocalAuthority-only routes
-  '/volunteer-coverage': ['LocalAuthority'],
+  '/volunteer-coverage': ['Volunteer', 'LocalAuthority', 'Admin'],
   '/local-authority-dashboard': ['LocalAuthority'],
   '/volunteer-management': ['LocalAuthority'],
   '/task-management': ['LocalAuthority'],

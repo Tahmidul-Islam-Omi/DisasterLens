@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { 
   Search, 
   Thermometer, 
@@ -10,7 +10,20 @@ import { WeatherCard } from '../components/WeatherCard';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useLanguage } from '../i18n/LanguageContext';
-import { mockDistricts } from '../data/mockData';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
+
+type DistrictWeather = {
+  id: string;
+  district: string;
+  districtBn: string;
+  division: string;
+  divisionBn: string;
+  temperature: number;
+  rainfall: number;
+  windSpeed: number;
+  riskLevel: 'high' | 'moderate' | 'low';
+};
 
 const mockChartData = [
   { name: '00:00', value: 12 },
@@ -24,19 +37,38 @@ const mockChartData = [
 
 export function DistrictWeatherView() {
   const { t, d } = useLanguage();
-  const [selectedDistrict, setSelectedDistrict] = useState(mockDistricts[0]); // Dhaka as default
+  const { token } = useAuth();
+  const [districts, setDistricts] = useState<DistrictWeather[]>([]);
+  const [selectedDistrict, setSelectedDistrict] = useState<DistrictWeather | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
 
-  const filteredDistricts = mockDistricts.filter(district => 
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<DistrictWeather[]>('/authority/district-weather', token);
+        setDistricts(data);
+        setSelectedDistrict(data[0] || null);
+      } catch (error) {
+        console.error('Failed to load district weather', error);
+      }
+    };
+    void loadData();
+  }, []);
+
+  const filteredDistricts = districts.filter(district => 
     d(district.district, district.districtBn).toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleSelectDistrict = (district: typeof mockDistricts[0]) => {
+  const handleSelectDistrict = (district: DistrictWeather) => {
     setSelectedDistrict(district);
     setSearchQuery('');
     setShowDropdown(false);
   };
+
+  if (!selectedDistrict) {
+    return <div className="flex-1 overflow-y-auto p-8 bg-[#F8FAFC]" />;
+  }
 
   return (
     <div className="flex-1 overflow-y-auto p-8 bg-[#F8FAFC]">

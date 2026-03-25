@@ -1,12 +1,43 @@
 import React from 'react';
+import { useEffect, useState } from 'react';
 import { 
   ClipboardList, Home, HeartPulse, Box, AlertTriangle, ChevronRight, CheckCircle2, Clock, Radar
 } from 'lucide-react';
 import { Link } from 'react-router';
 import { useLanguage } from '../i18n/LanguageContext';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
+import type { Task } from '../types';
+
+type DashboardPayload = {
+  stats: {
+    householdsVisited: number;
+    householdsTarget: number;
+    peopleRescued: number;
+    reliefDelivered: number;
+    activeAlerts: number;
+  };
+  tasks: Task[];
+};
 
 export function VolunteerDashboardView() {
   const { t } = useLanguage();
+  const { token } = useAuth();
+  const [payload, setPayload] = useState<DashboardPayload | null>(null);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const data = await api.get<DashboardPayload>('/volunteer/dashboard', token);
+        setPayload(data);
+      } catch (error) {
+        console.error('Failed to load volunteer dashboard', error);
+      }
+    };
+    void load();
+  }, []);
+
+  const tasks = payload?.tasks ?? [];
   return (
     <div className="flex-1 overflow-y-auto bg-[#F8FAFC] p-6 lg:p-8">
       <div className="max-w-5xl mx-auto space-y-6">
@@ -30,22 +61,22 @@ export function VolunteerDashboardView() {
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
             <Home className="w-6 h-6 text-blue-600 mb-3" />
             <p className="text-xs text-gray-500 font-medium uppercase mb-1">{t('households_visited')}</p>
-            <p className="text-2xl font-bold text-gray-900">42<span className="text-sm font-normal text-gray-500 ml-1">/ 100</span></p>
+            <p className="text-2xl font-bold text-gray-900">{payload?.stats.householdsVisited ?? 0}<span className="text-sm font-normal text-gray-500 ml-1">/ {payload?.stats.householdsTarget ?? 0}</span></p>
           </div>
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
             <HeartPulse className="w-6 h-6 text-green-600 mb-3" />
             <p className="text-xs text-gray-500 font-medium uppercase mb-1">{t('people_rescued')}</p>
-            <p className="text-2xl font-bold text-gray-900">14</p>
+            <p className="text-2xl font-bold text-gray-900">{payload?.stats.peopleRescued ?? 0}</p>
           </div>
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
             <Box className="w-6 h-6 text-amber-600 mb-3" />
             <p className="text-xs text-gray-500 font-medium uppercase mb-1">{t('relief_delivered')}</p>
-            <p className="text-2xl font-bold text-gray-900">85<span className="text-sm font-normal text-gray-500 ml-1">{t('kits_unit')}</span></p>
+            <p className="text-2xl font-bold text-gray-900">{payload?.stats.reliefDelivered ?? 0}<span className="text-sm font-normal text-gray-500 ml-1">{t('kits_unit')}</span></p>
           </div>
           <div className="bg-red-50 p-5 rounded-xl border border-red-100 shadow-sm">
             <AlertTriangle className="w-6 h-6 text-red-600 mb-3" />
             <p className="text-xs text-red-800 font-medium uppercase mb-1">{t('active_alerts')}</p>
-            <p className="text-2xl font-bold text-red-700">2<span className="text-sm font-normal text-red-600 ml-1">{t('in_your_zone')}</span></p>
+            <p className="text-2xl font-bold text-red-700">{payload?.stats.activeAlerts ?? 0}<span className="text-sm font-normal text-red-600 ml-1">{t('in_your_zone')}</span></p>
           </div>
         </div>
 
@@ -54,22 +85,18 @@ export function VolunteerDashboardView() {
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
               <h3 className="text-lg font-bold text-gray-900 mb-4">{t('todays_tasks')}</h3>
               <div className="space-y-3">
-                {[
-                  { id: 1, titleKey: 'task_1_title', timeKey: 'task_1_time', status: 'completed' },
-                  { id: 2, titleKey: 'task_2_title', timeKey: 'task_2_time', status: 'active' },
-                  { id: 3, titleKey: 'task_3_title', timeKey: 'task_3_time', status: 'pending' }
-                ].map((task) => (
+                {tasks.map((task, index) => (
                   <div key={task.id} className="flex items-center p-3 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors">
                     {task.status === 'completed' ? (
                       <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0 mr-3" />
                     ) : (
-                      <div className={`w-5 h-5 rounded-full border-2 shrink-0 mr-3 ${task.status === 'active' ? 'border-[#1E3A8A] flex items-center justify-center' : 'border-gray-300'}`}>
-                        {task.status === 'active' && <div className="w-2.5 h-2.5 bg-[#1E3A8A] rounded-full" />}
+                      <div className={`w-5 h-5 rounded-full border-2 shrink-0 mr-3 ${task.status === 'in-progress' || task.status === 'assigned' ? 'border-[#1E3A8A] flex items-center justify-center' : 'border-gray-300'}`}>
+                        {(task.status === 'in-progress' || task.status === 'assigned') && <div className="w-2.5 h-2.5 bg-[#1E3A8A] rounded-full" />}
                       </div>
                     )}
                     <div className="flex-1">
-                      <p className={`text-sm font-medium ${task.status === 'completed' ? 'text-gray-500 line-through' : 'text-gray-900'}`}>{t(task.titleKey)}</p>
-                      <p className="text-xs text-gray-500">{t(task.timeKey)}</p>
+                      <p className={`text-sm font-medium ${task.status === 'completed' ? 'text-gray-500 line-through' : 'text-gray-900'}`}>{task.title}</p>
+                      <p className="text-xs text-gray-500">{task.deadline || `Task ${index + 1}`}</p>
                     </div>
                   </div>
                 ))}

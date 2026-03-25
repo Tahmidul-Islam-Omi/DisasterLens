@@ -1,12 +1,38 @@
+import { useEffect, useState } from "react";
 import { Card } from "./ui/card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "./ui/table";
 import { useLanguage } from "../i18n/LanguageContext";
-import { villageStatusData } from "../data/mockData";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+
+type VillageStatus = {
+  id: string;
+  villageName: string;
+  villageNameBn: string;
+  safe: number;
+  needHelp: number;
+  needRescue: number;
+  noResponse: number;
+};
 
 export function VillageStatusTable() {
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+  const [rows, setRows] = useState<VillageStatus[]>([]);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<VillageStatus[]>("/authority/village-status", token);
+        setRows(data);
+      } catch (error) {
+        console.error("Failed to load village status", error);
+      }
+    };
+    void loadData();
+  }, []);
 
   return (
     <Card>
@@ -24,8 +50,8 @@ export function VillageStatusTable() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {villageStatusData.map((village, index) => (
-                <TableRow key={index}>
+              {rows.map((village) => (
+                <TableRow key={village.id}>
                   <TableCell className="font-medium">{d(village.villageName, village.villageNameBn)}</TableCell>
                   <TableCell className="text-right">
                     <span className="inline-flex items-center px-2 py-1 bg-green-50 text-green-700 rounded-md text-sm font-medium">{village.safe}</span>

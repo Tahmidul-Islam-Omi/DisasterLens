@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # CORS (comma-separated origins)
     CORS_ALLOWED_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ALLOW_ORIGIN_REGEX: str = r"https?://(localhost|127\\.0\\.1)(:\\d+)?"
 
     # MongoDB
     MONGODB_URI: str = "mongodb://localhost:27017"

@@ -7,3 +7,6 @@ httpx
 beautifulsoup4
 langchain-core
 langchain-google-genai
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt

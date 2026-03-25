@@ -1,10 +1,34 @@
+import { useEffect, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Card } from "./ui/card";
 import { useLanguage } from "../i18n/LanguageContext";
-import { silentCommunities } from "../data/mockData";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+
+type SilentCommunity = {
+  id: string;
+  villageName: string;
+  villageNameBn: string;
+  populationContacted: number;
+  responsesReceived: number;
+};
 
 export function SilentCommunityAlert() {
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+  const [rows, setRows] = useState<SilentCommunity[]>([]);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<SilentCommunity[]>("/authority/silent-communities", token);
+        setRows(data);
+      } catch (error) {
+        console.error("Failed to load silent communities", error);
+      }
+    };
+    void loadData();
+  }, []);
 
   return (
     <Card className="border-l-4 border-l-orange-500 bg-orange-50">
@@ -20,8 +44,8 @@ export function SilentCommunityAlert() {
         </div>
 
         <div className="space-y-3">
-          {silentCommunities.map((community, index) => (
-            <div key={index} className="bg-white p-4 rounded-lg border border-orange-200">
+          {rows.map((community) => (
+            <div key={community.id} className="bg-white p-4 rounded-lg border border-orange-200">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <p className="text-xs text-gray-500">{t("silentAlert.villageName")}</p>

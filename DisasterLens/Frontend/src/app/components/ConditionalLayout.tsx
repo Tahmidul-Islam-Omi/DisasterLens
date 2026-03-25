@@ -15,7 +15,15 @@ import { PublicLayout } from './PublicLayout';
  * (e.g., Weather Dashboard, District Weather, Disaster Details, Alerts)
  */
 export function ConditionalLayout() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-sm text-gray-600 bg-slate-50">
+        Loading session...
+      </div>
+    );
+  }
 
   if (isAuthenticated) {
     // Show protected layout with sidebar

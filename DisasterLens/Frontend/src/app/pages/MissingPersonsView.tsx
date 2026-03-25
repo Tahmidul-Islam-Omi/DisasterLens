@@ -1,19 +1,342 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { 
   Upload, Search, UserCircle, MapPin, Calendar, Clock, 
   Phone, AlertTriangle, CheckCircle, ChevronRight, Map,
-  ZoomIn, ZoomOut, Users, Info
+  LocateFixed, Users, Maximize
 } from 'lucide-react';
 import { ImageWithFallback } from '../components/ImageWithFallback';
 import { useLanguage } from '../i18n/LanguageContext';
-import { mockMissingPersons } from '../data/mockData';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
+import { VolunteerCoverageMap } from '../components/VolunteerCoverageMap';
+import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import { toast } from 'sonner';
+
+type MissingMapPoint = MissingPerson & {
+  lat: number;
+  lng: number;
+};
+
+function FlyToPosition({ center, zoom }: { center: [number, number]; zoom: number }) {
+  const map = useMap();
+  map.setView(center, zoom, { animate: true });
+  return null;
+}
+
+type MissingPerson = {
+  id: string;
+  name: string;
+  nameBn: string;
+  age: number;
+  lastSeen: string;
+  lastSeenBn: string;
+  date: string;
+  dateBn: string;
+  status: string;
+  statusBn: string;
+  score: number;
+  phone: string;
+  img: string;
+  lat?: number;
+  lng?: number;
+};
 
 export function MissingPersonsView() {
   const { t, d } = useLanguage();
+  const { token } = useAuth();
   const [activeTab, setActiveTab] = useState<'map' | 'report' | 'search'>('map');
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
-  const [mapZoomLevel, setMapZoomLevel] = useState<'zoomed-out' | 'zoomed-in'>('zoomed-out');
+  const [results, setResults] = useState<MissingPerson[]>([]);
+  const [mapPoints, setMapPoints] = useState<MissingMapPoint[]>([]);
+  const [mapSearch, setMapSearch] = useState('');
+  const [mapTableSearch, setMapTableSearch] = useState('');
+  const [mapCenter, setMapCenter] = useState<[number, number]>([23.8103, 90.4125]);
+  const [mapZoom, setMapZoom] = useState(8);
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
+  const [reportAddress, setReportAddress] = useState('');
+  const [reportLatitude, setReportLatitude] = useState('');
+  const [reportLongitude, setReportLongitude] = useState('');
+
+  useEffect(() => {
+    const loadData = async () => {
+      if (!token) {
+        return;
+      }
+      try {
+        const data = await api.get<MissingPerson[]>('/authority/missing-persons', token);
+        setResults(data);
+      } catch (error) {
+        console.error('Failed to load missing persons', error);
+      }
+    };
+    void loadData();
+  }, [token]);
+
+  useEffect(() => {
+    const geocodeResults = async () => {
+      const cacheKey = 'missing_person_geo_cache_v1';
+      const cache = JSON.parse(localStorage.getItem(cacheKey) || '{}') as Record<string, { lat: number; lng: number }>;
+
+      const points = await Promise.all(
+        results.map(async (person) => {
+          if (typeof person.lat === 'number' && typeof person.lng === 'number') {
+            return {
+              ...person,
+              lat: person.lat,
+              lng: person.lng,
+            } as MissingMapPoint;
+          }
+
+          const query = `${person.lastSeen}, Bangladesh`;
+          if (!cache[query]) {
+            try {
+              const response = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`,
+              );
+              const data = (await response.json()) as Array<{ lat: string; lon: string }>;
+              if (data.length > 0) {
+                cache[query] = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+              }
+            } catch (error) {
+              console.error('Failed geocoding missing person location', error);
+            }
+          }
+
+          if (!cache[query]) {
+            return null;
+          }
+
+          return {
+            ...person,
+            lat: cache[query].lat,
+            lng: cache[query].lng,
+          } as MissingMapPoint;
+        }),
+      );
+
+      localStorage.setItem(cacheKey, JSON.stringify(cache));
+      const validPoints = points.filter((point): point is MissingMapPoint => Boolean(point));
+      setMapPoints(validPoints);
+      if (validPoints.length > 0) {
+        setMapCenter([validPoints[0].lat, validPoints[0].lng]);
+        setMapZoom(10);
+      }
+    };
+
+    if (results.length > 0) {
+      void geocodeResults();
+    }
+  }, [results]);
+
+  const handleMapSearch = async () => {
+    const query = mapSearch.trim();
+    if (!query) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`,
+      );
+      const data = (await response.json()) as Array<{ lat: string; lon: string }>;
+      if (data.length > 0) {
+        setMapCenter([parseFloat(data[0].lat), parseFloat(data[0].lon)]);
+        setMapZoom(13);
+      }
+    } catch (error) {
+      console.error('Map search failed', error);
+    }
+  };
+
+  const handleMapGps = () => {
+    if (!navigator.geolocation) {
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setMapCenter([position.coords.latitude, position.coords.longitude]);
+        setMapZoom(14);
+      },
+      (error) => {
+        console.error('GPS locate failed', error);
+      },
+      { enableHighAccuracy: true, timeout: 15000 },
+    );
+  };
+
+  const handleRecenterAllPoints = () => {
+    if (mapPoints.length === 0) {
+      toast.error('No missing points available to center');
+      return;
+    }
+
+    const lats = mapPoints.map((point) => point.lat);
+    const lngs = mapPoints.map((point) => point.lng);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLng = (minLng + maxLng) / 2;
+    const span = Math.max(maxLat - minLat, maxLng - minLng);
+
+    let zoom = 8;
+    if (span < 0.02) zoom = 14;
+    else if (span < 0.05) zoom = 13;
+    else if (span < 0.1) zoom = 12;
+    else if (span < 0.2) zoom = 11;
+    else if (span < 0.5) zoom = 10;
+    else if (span < 1) zoom = 9;
+
+    setMapCenter([centerLat, centerLng]);
+    setMapZoom(zoom);
+  };
+
+  const markerColor = (status: string) => {
+    if (status === 'Rescued / Safe') {
+      return '#16A34A';
+    }
+    if (status === 'Possible Match') {
+      return '#2563EB';
+    }
+    return '#DC2626';
+  };
+
+  const handleReportSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+
+    const name = String(formData.get('fullName') || '').trim();
+    const ageValue = Number(formData.get('age') || 0);
+    const dateSeen = String(formData.get('dateLastSeen') || '').trim();
+    const timeSeen = String(formData.get('timeLastSeen') || '').trim();
+    const phone = String(formData.get('contactPhone') || '').trim();
+
+    if (!name) {
+      toast.error('Full name is required');
+      return;
+    }
+    if (!reportAddress || !reportLatitude || !reportLongitude) {
+      toast.error('Please pick location from map');
+      return;
+    }
+
+    const lat = Number(reportLatitude);
+    const lng = Number(reportLongitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      toast.error('Invalid selected coordinates');
+      return;
+    }
+
+    const record: MissingPerson = {
+      id: '',
+      name,
+      nameBn: name,
+      age: ageValue || 0,
+      lastSeen: reportAddress,
+      lastSeenBn: reportAddress,
+      date: `${dateSeen || 'N/A'} ${timeSeen || ''}`.trim(),
+      dateBn: `${dateSeen || 'N/A'} ${timeSeen || ''}`.trim(),
+      status: 'Reported Missing',
+      statusBn: 'নিখোঁজ রিপোর্ট',
+      score: 0,
+      phone: phone || 'N/A',
+      img: 'https://images.unsplash.com/photo-1579924711789-872f06ecf220?w=500&q=80',
+      lat,
+      lng,
+    };
+
+    setIsSubmittingReport(true);
+    try {
+      const saved = await api.post<MissingPerson>(
+        '/authority/missing-persons',
+        {
+          name: record.name,
+          nameBn: record.nameBn,
+          age: record.age,
+          gender: String(formData.get('gender') || '').trim(),
+          lastSeen: record.lastSeen,
+          lastSeenBn: record.lastSeenBn,
+          date: dateSeen,
+          time: timeSeen,
+          status: record.status,
+          statusBn: record.statusBn,
+          score: record.score,
+          phone: record.phone,
+          img: record.img,
+          clothingDescription: String(formData.get('clothingDescription') || '').trim(),
+          additionalNotes: String(formData.get('additionalNotes') || '').trim(),
+          lat,
+          lng,
+        },
+        token,
+      );
+
+      setResults((prev) => [saved, ...prev]);
+      setMapPoints((prev) => [
+        {
+          ...saved,
+          lat: saved.lat ?? lat,
+          lng: saved.lng ?? lng,
+        },
+        ...prev,
+      ]);
+      setMapCenter([lat, lng]);
+      setMapZoom(13);
+      setActiveTab('map');
+      form.reset();
+      setReportAddress('');
+      setReportLatitude('');
+      setReportLongitude('');
+      toast.success('Missing person report submitted');
+    } catch (error) {
+      console.error('Failed to submit report', error);
+      toast.error('Failed to submit report');
+    } finally {
+      setIsSubmittingReport(false);
+    }
+  };
+
+  const markerTextClass = (status: string) => {
+    if (status === 'Rescued / Safe') {
+      return 'text-green-700';
+    }
+    if (status === 'Possible Match') {
+      return 'text-blue-700';
+    }
+    return 'text-red-700';
+  };
+
+  const filteredMissingPersons = useMemo(() => {
+    const query = mapTableSearch.trim().toLowerCase();
+    if (!query) {
+      return results;
+    }
+
+    return results.filter((person) => {
+      const searchable = [
+        person.id,
+        person.name,
+        person.nameBn,
+        String(person.age),
+        person.lastSeen,
+        person.lastSeenBn,
+        person.date,
+        person.dateBn,
+        person.status,
+        person.statusBn,
+        person.phone,
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return searchable.includes(query);
+    });
+  }, [mapTableSearch, results]);
 
   const handleSearch = () => {
     setIsSearching(true);
@@ -59,184 +382,186 @@ export function MissingPersonsView() {
 
       <div className="p-8 max-w-6xl mx-auto">
         {activeTab === 'map' ? (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col h-[700px]">
-            <div className="p-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between shrink-0">
-              <div>
-                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                  <MapPin className="w-5 h-5 text-[#1E3A8A]" /> 
-                  {t('area_distribution_map')}
-                </h3>
-                <p className="text-xs text-gray-500 mt-0.5">{t('click_cluster_zoom')}</p>
-              </div>
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => setMapZoomLevel('zoomed-out')}
-                  className={`p-2 rounded border ${mapZoomLevel === 'zoomed-out' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'} transition-colors`}
-                  title={t('zoom_out_cluster')}
-                >
-                  <ZoomOut className="w-4 h-4" />
-                </button>
-                <button 
-                  onClick={() => setMapZoomLevel('zoomed-in')}
-                  className={`p-2 rounded border ${mapZoomLevel === 'zoomed-in' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'} transition-colors`}
-                  title={t('zoom_in_individual')}
-                >
-                  <ZoomIn className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 relative bg-blue-50/30 overflow-hidden group">
-              {/* Simulated Map Background */}
-              <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" className="absolute inset-0 opacity-10 pointer-events-none transition-transform duration-700 ease-in-out" style={{ transform: mapZoomLevel === 'zoomed-in' ? 'scale(2.5) translate(-10%, -10%)' : 'scale(1)' }}>
-                <defs>
-                  <pattern id="mainGrid" width="60" height="60" patternUnits="userSpaceOnUse">
-                    <path d="M 60 0 L 0 0 0 60" fill="none" stroke="#1E3A8A" strokeWidth="1"/>
-                  </pattern>
-                </defs>
-                <rect width="100%" height="100%" fill="url(#mainGrid)" />
-                <path d="M 100 200 Q 300 150 500 300 T 900 250" fill="none" stroke="#1E3A8A" strokeWidth="3" opacity="0.3" className="hidden sm:block" />
-                <path d="M 200 400 Q 400 350 600 500 T 1000 450" fill="none" stroke="#1E3A8A" strokeWidth="3" opacity="0.3" className="hidden sm:block" />
-              </svg>
-
-              {/* Map Data Visualization */}
-              {mapZoomLevel === 'zoomed-out' ? (
-                // Clustered View (Showing how many missing per area)
-                <div className="absolute inset-0 transition-opacity duration-500 opacity-100">
-                  <div 
-                    className="absolute top-[30%] left-[25%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
-                    onClick={() => setMapZoomLevel('zoomed-in')}
-                  >
-                    <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center animate-pulse">
-                      <div className="w-10 h-10 bg-red-600 rounded-full flex items-center justify-center text-white font-bold border-2 border-white shadow-lg">
-                        14
-                      </div>
-                    </div>
-                    <span className="mt-2 bg-white/90 backdrop-blur px-2 py-1 rounded text-xs font-bold text-gray-900 border border-gray-200 shadow-sm text-center">
-                      Sylhet Sadar<br/><span className="text-[10px] text-gray-500 font-medium">{t('critical_zone')}</span>
-                    </span>
-                  </div>
-
-                  <div 
-                    className="absolute top-[50%] left-[60%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
-                    onClick={() => setMapZoomLevel('zoomed-in')}
-                  >
-                    <div className="w-12 h-12 bg-amber-500/20 rounded-full flex items-center justify-center">
-                      <div className="w-8 h-8 bg-amber-500 rounded-full flex items-center justify-center text-white font-bold border-2 border-white shadow-lg text-sm">
-                        5
-                      </div>
-                    </div>
-                    <span className="mt-2 bg-white/90 backdrop-blur px-2 py-1 rounded text-xs font-bold text-gray-900 border border-gray-200 shadow-sm text-center">
-                      Sunamganj<br/><span className="text-[10px] text-gray-500 font-medium">{t('river_belt')}</span>
-                    </span>
-                  </div>
-
-                  <div 
-                    className="absolute top-[20%] left-[70%] flex flex-col items-center cursor-pointer hover:scale-110 transition-transform"
-                    onClick={() => setMapZoomLevel('zoomed-in')}
-                  >
-                    <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center">
-                      <div className="w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold border-2 border-white shadow-lg text-xs">
-                        2
-                      </div>
-                    </div>
-                    <span className="mt-2 bg-white/90 backdrop-blur px-2 py-1 rounded text-xs font-bold text-gray-900 border border-gray-200 shadow-sm text-center">
-                      Netrokona
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                // Zoomed In View (Individual Pins)
-                <div className="absolute inset-0 transition-opacity duration-500 opacity-100 animate-in fade-in zoom-in-95">
-                  {/* Individual Pin 1 */}
-                  <div className="absolute top-[25%] left-[20%] group">
-                    <div className="w-4 h-4 bg-red-600 rounded-full border-2 border-white shadow-lg relative z-10 cursor-pointer hover:scale-125 transition-transform"></div>
-                    <div className="absolute top-6 left-1/2 -translate-x-1/2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
-                      <div className="flex gap-2">
-                        <img src="https://images.unsplash.com/photo-1705940372495-ab4ed45d3102?w=100&q=80" alt="Person" className="w-10 h-10 rounded object-cover" />
-                        <div>
-                          <p className="text-xs font-bold text-gray-900">Ayesha Begum, 34</p>
-                          <p className="text-[10px] text-gray-500 flex items-center gap-0.5"><Clock className="w-2.5 h-2.5" /> {t('time_2_hours_ago')}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Individual Pin 2 */}
-                  <div className="absolute top-[32%] left-[28%] group">
-                    <div className="w-4 h-4 bg-red-600 rounded-full border-2 border-white shadow-lg relative z-10 cursor-pointer hover:scale-125 transition-transform"></div>
-                    <div className="absolute top-6 left-1/2 -translate-x-1/2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
-                      <div className="flex gap-2">
-                        <div className="w-10 h-10 rounded bg-gray-100 flex items-center justify-center text-gray-400"><UserCircle className="w-6 h-6" /></div>
-                        <div>
-                          <p className="text-xs font-bold text-gray-900">Unknown Male, ~40</p>
-                          <p className="text-[10px] text-gray-500 flex items-center gap-0.5"><Clock className="w-2.5 h-2.5" /> {t('time_5_hours_ago')}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Individual Pin 3 */}
-                  <div className="absolute top-[28%] left-[32%] group">
-                    <div className="w-4 h-4 bg-red-600 rounded-full border-2 border-white shadow-lg relative z-10 cursor-pointer hover:scale-125 transition-transform"></div>
-                    <div className="absolute top-6 left-1/2 -translate-x-1/2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
-                      <div className="flex gap-2">
-                        <img src="https://images.unsplash.com/photo-1647980188230-acfc89a718bb?w=100&q=80" alt="Person" className="w-10 h-10 rounded object-cover" />
-                        <div>
-                          <p className="text-xs font-bold text-gray-900">Fatima, 36</p>
-                          <p className="text-[10px] text-gray-500 flex items-center gap-0.5"><Clock className="w-2.5 h-2.5" /> {t('time_1_day_ago')}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Individual Pin 4 (Sunamganj Area) */}
-                  <div className="absolute top-[48%] left-[58%] group">
-                    <div className="w-4 h-4 bg-amber-500 rounded-full border-2 border-white shadow-lg relative z-10 cursor-pointer hover:scale-125 transition-transform"></div>
-                    <div className="absolute top-6 left-1/2 -translate-x-1/2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
-                      <div className="flex gap-2">
-                        <img src="https://images.unsplash.com/photo-1561165804-4ec46664a4cb?w=100&q=80" alt="Person" className="w-10 h-10 rounded object-cover" />
-                        <div>
-                          <p className="text-xs font-bold text-gray-900">Rina Akhtar, 32</p>
-                          <p className="text-[10px] text-gray-500 flex items-center gap-0.5"><Clock className="w-2.5 h-2.5" /> {t('time_3_days_ago')}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Context Note when zoomed in */}
-                  <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-lg border border-gray-200 text-sm font-medium text-gray-700 flex items-center gap-2">
-                    <Info className="w-4 h-4 text-[#1E3A8A]" />
-                    {t('hover_pins_detail')}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Map Legend & Summary */}
-            <div className="p-4 border-t border-gray-100 bg-white grid grid-cols-3 gap-4 shrink-0">
-              <div className="flex items-center gap-3 border-r border-gray-100 pr-4">
-                <div className="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center">
-                  <Users className="w-5 h-5 text-red-600" />
-                </div>
+          <div className="space-y-6">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col h-175">
+              <div className="p-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between shrink-0">
                 <div>
-                  <p className="text-xs text-gray-500 font-medium">{t('total_missing_active')}</p>
-                  <p className="text-lg font-bold text-gray-900">21</p>
+                  <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                    <MapPin className="w-5 h-5 text-[#1E3A8A]" /> 
+                    {t('area_distribution_map')}
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Live missing person points from backend records</p>
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex items-center rounded-lg border border-gray-200 bg-white">
+                    <input
+                      type="text"
+                      value={mapSearch}
+                      onChange={(e) => setMapSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleMapSearch();
+                        }
+                      }}
+                      className="w-64 px-3 py-2 text-sm outline-none"
+                      placeholder="Search location"
+                      title="Search location"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleMapSearch()}
+                      className="border-l border-gray-200 px-3 py-2 text-gray-600 hover:bg-gray-50"
+                      title="Search"
+                      aria-label="Search"
+                    >
+                      <Search className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleMapGps}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-gray-700 hover:bg-gray-50"
+                    title="Use GPS"
+                    aria-label="Use GPS"
+                  >
+                    <LocateFixed className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRecenterAllPoints}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-gray-700 hover:bg-gray-50"
+                    title="Recenter all missing points"
+                    aria-label="Recenter all missing points"
+                  >
+                    <Maximize className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
-              <div className="col-span-2 flex items-center justify-around">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-red-600 rounded-full shadow-sm"></div>
-                  <span className="text-xs text-gray-600 font-medium">{t('high_density')}</span>
+
+              <div className="flex-1">
+                <MapContainer center={mapCenter} zoom={mapZoom} className="h-full w-full">
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                  <FlyToPosition center={mapCenter} zoom={mapZoom} />
+
+                  {mapPoints.map((person) => (
+                    <CircleMarker
+                      key={person.id}
+                      center={[person.lat, person.lng]}
+                      radius={8}
+                      pathOptions={{
+                        color: markerColor(person.status),
+                        fillColor: markerColor(person.status),
+                        fillOpacity: 0.9,
+                      }}
+                    >
+                      <Popup>
+                        <div className="max-w-56 text-sm">
+                          <p className="font-semibold text-gray-900">{d(person.name, person.nameBn)}</p>
+                          <p className="text-xs text-gray-600 mt-1">{d(person.lastSeen, person.lastSeenBn)}</p>
+                          <p className="text-xs text-gray-600">{d(person.date, person.dateBn)}</p>
+                          <p className={`text-xs font-medium mt-2 ${markerTextClass(person.status)}`}>
+                            {d(person.status, person.statusBn)}
+                          </p>
+                        </div>
+                      </Popup>
+                    </CircleMarker>
+                  ))}
+                </MapContainer>
+              </div>
+
+              {/* Map Legend & Summary */}
+              <div className="p-4 border-t border-gray-100 bg-white grid grid-cols-3 gap-4 shrink-0">
+                <div className="flex items-center gap-3 border-r border-gray-100 pr-4">
+                  <div className="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center">
+                    <Users className="w-5 h-5 text-red-600" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 font-medium">{t('total_missing_active')}</p>
+                    <p className="text-lg font-bold text-gray-900">{mapPoints.length}</p>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-amber-500 rounded-full shadow-sm"></div>
-                  <span className="text-xs text-gray-600 font-medium">{t('medium_density')}</span>
+                <div className="col-span-2 flex items-center justify-around">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-red-600 rounded-full shadow-sm"></div>
+                    <span className="text-xs text-gray-600 font-medium">{t('high_density')}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-amber-500 rounded-full shadow-sm"></div>
+                    <span className="text-xs text-gray-600 font-medium">{t('medium_density')}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-blue-600 rounded-full shadow-sm"></div>
+                    <span className="text-xs text-gray-600 font-medium">{t('low_density')}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-blue-600 rounded-full shadow-sm"></div>
-                  <span className="text-xs text-gray-600 font-medium">{t('low_density')}</span>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between gap-4">
+                <h4 className="text-base font-semibold text-gray-900">Missing Persons List</h4>
+                <div className="flex items-center rounded-lg border border-gray-200 bg-white w-full max-w-md">
+                  <Search className="w-4 h-4 text-gray-500 ml-3" />
+                  <input
+                    type="text"
+                    value={mapTableSearch}
+                    onChange={(e) => setMapTableSearch(e.target.value)}
+                    className="w-full px-3 py-2 text-sm outline-none"
+                    placeholder="Search by ID, name, phone, status, date, or location"
+                    title="Search missing person details"
+                  />
                 </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-semibold">ID</th>
+                      <th className="px-4 py-3 text-left font-semibold">Name</th>
+                      <th className="px-4 py-3 text-left font-semibold">Age</th>
+                      <th className="px-4 py-3 text-left font-semibold">Last Seen</th>
+                      <th className="px-4 py-3 text-left font-semibold">Date</th>
+                      <th className="px-4 py-3 text-left font-semibold">Status</th>
+                      <th className="px-4 py-3 text-left font-semibold">Phone</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredMissingPersons.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-6 text-center text-gray-500" colSpan={7}>
+                          No missing person found for your search.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredMissingPersons.map((person) => (
+                        <tr key={person.id} className="border-t border-gray-100 hover:bg-gray-50">
+                          <td className="px-4 py-3 text-gray-700 font-medium">{person.id}</td>
+                          <td className="px-4 py-3 text-gray-900">{d(person.name, person.nameBn)}</td>
+                          <td className="px-4 py-3 text-gray-700">{person.age}</td>
+                          <td className="px-4 py-3 text-gray-700">{d(person.lastSeen, person.lastSeenBn)}</td>
+                          <td className="px-4 py-3 text-gray-700">{d(person.date, person.dateBn)}</td>
+                          <td className="px-4 py-3">
+                            <span className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                              person.status === 'Rescued / Safe'
+                                ? 'bg-green-100 text-green-700'
+                                : person.status === 'Possible Match'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-amber-100 text-amber-700'
+                            }`}>
+                              {d(person.status, person.statusBn)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-gray-700">{person.phone}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -296,7 +621,7 @@ export function MissingPersonsView() {
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {mockMissingPersons.map((result) => (
+                  {results.map((result) => (
                     <div key={result.id} className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm flex gap-4 hover:shadow-md transition-shadow cursor-pointer">
                       <div className="w-24 h-24 rounded-lg overflow-hidden shrink-0 relative">
                         <ImageWithFallback src={result.img} alt={d(result.name, result.nameBn)} className="w-full h-full object-cover" />
@@ -377,23 +702,23 @@ export function MissingPersonsView() {
             </div>
             
             <div className="p-6">
-              <form className="space-y-6">
+              <form className="space-y-6" onSubmit={handleReportSubmit}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Left Column */}
                   <div className="space-y-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">{t('full_name')}</label>
-                      <input type="text" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder="e.g. John Doe" />
+                      <input name="fullName" type="text" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder="e.g. John Doe" required />
                     </div>
                     
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">{t('age')}</label>
-                        <input type="number" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder="e.g. 35" />
+                        <input name="age" type="number" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder="e.g. 35" />
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">{t('gender')}</label>
-                        <select className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white">
+                        <select name="gender" title={t('gender')} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white">
                           <option>{t('select')}</option>
                           <option>{t('male')}</option>
                           <option>{t('female')}</option>
@@ -402,11 +727,53 @@ export function MissingPersonsView() {
                       </div>
                     </div>
 
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('last_seen_location')}</label>
-                      <div className="relative">
-                        <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                        <input type="text" className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder={t('area_village_landmark')} />
+                    <div className="space-y-3">
+                      <label className="block text-sm font-medium text-gray-700">{t('last_seen_location')} (Pick from map)</label>
+                      <VolunteerCoverageMap
+                        points={[]}
+                        selectedPoint={
+                          reportLatitude && reportLongitude
+                            ? {
+                                lat: Number(reportLatitude),
+                                lng: Number(reportLongitude),
+                                label: reportAddress || 'Selected location',
+                              }
+                            : null
+                        }
+                        onSelectPoint={(point) => {
+                          setReportLatitude(point.lat.toFixed(6));
+                          setReportLongitude(point.lng.toFixed(6));
+                          if (point.label) {
+                            setReportAddress(point.label);
+                          }
+                        }}
+                        heightClassName="h-64"
+                      />
+                      <textarea
+                        value={reportAddress}
+                        readOnly
+                        rows={2}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-sm"
+                        placeholder="Use map search, GPS, or click map to capture full address"
+                        title="Selected full address"
+                      />
+                      <div className="grid grid-cols-2 gap-4">
+                        <input
+                          type="text"
+                          value={reportLatitude}
+                          readOnly
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-sm"
+                          placeholder="Latitude"
+                          title="Selected latitude"
+                        />
+                        <input
+                          type="text"
+                          value={reportLongitude}
+                          readOnly
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-sm"
+                          placeholder="Longitude"
+                          title="Selected longitude"
+                        />
                       </div>
                     </div>
 
@@ -415,14 +782,14 @@ export function MissingPersonsView() {
                         <label className="block text-sm font-medium text-gray-700 mb-1">{t('date_last_seen')}</label>
                         <div className="relative">
                           <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                          <input type="date" className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" />
+                          <input name="dateLastSeen" title={t('date_last_seen')} type="date" className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" />
                         </div>
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">{t('time_last_seen')}</label>
                         <div className="relative">
                           <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                          <input type="time" className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" />
+                          <input name="timeLastSeen" title={t('time_last_seen')} type="time" className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" />
                         </div>
                       </div>
                     </div>
@@ -441,14 +808,14 @@ export function MissingPersonsView() {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">{t('clothing_description')}</label>
-                       <input type="text" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder={t('clothing_placeholder')} />
+                       <input name="clothingDescription" type="text" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder={t('clothing_placeholder')} />
                     </div>
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">{t('your_contact_info')}</label>
                       <div className="relative">
                         <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                        <input type="tel" className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder={t('phone_number')} />
+                        <input name="contactPhone" type="tel" className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm" placeholder={t('phone_number')} />
                       </div>
                     </div>
                   </div>
@@ -456,16 +823,16 @@ export function MissingPersonsView() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">{t('additional_notes')}</label>
-                   <textarea rows={3} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm resize-none" placeholder={t('additional_notes_placeholder')}></textarea>
+                   <textarea name="additionalNotes" rows={3} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm resize-none" placeholder={t('additional_notes_placeholder')}></textarea>
                 </div>
 
                 <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
                   <button type="button" className="px-5 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
                     {t('cancel')}
                   </button>
-                  <button type="button" className="px-5 py-2 text-sm font-medium text-white bg-[#DC2626] rounded-lg hover:bg-red-700 flex items-center gap-2 shadow-sm">
+                  <button type="submit" disabled={isSubmittingReport} className="px-5 py-2 text-sm font-medium text-white bg-[#DC2626] rounded-lg hover:bg-red-700 flex items-center gap-2 shadow-sm disabled:opacity-60">
                     <CheckCircle className="w-4 h-4" />
-                    {t('submit_report')}
+                    {isSubmittingReport ? 'Submitting...' : t('submit_report')}
                   </button>
                 </div>
               </form>

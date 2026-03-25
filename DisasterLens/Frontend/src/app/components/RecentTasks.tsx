@@ -1,10 +1,22 @@
+import { useEffect, useState } from "react";
 import { ClipboardList, ArrowRight } from "lucide-react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { useNavigate } from "react-router";
 import { useLanguage } from "../i18n/LanguageContext";
-import { recentTasks } from "../data/mockData";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+
+type RecentTask = {
+  id: string;
+  title: string;
+  titleBn: string;
+  priority: string;
+  assignedTo: string | string[];
+  assignedToBn: string | string[];
+  status: string;
+};
 
 const priorityStyles: Record<string, string> = {
   critical: "bg-red-100 text-red-800",
@@ -33,6 +45,20 @@ const statusKeys: Record<string, string> = {
 export function RecentTasks() {
   const navigate = useNavigate();
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+  const [tasks, setTasks] = useState<RecentTask[]>([]);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<RecentTask[]>("/authority/recent-tasks", token);
+        setTasks(data);
+      } catch (error) {
+        console.error("Failed to load recent tasks", error);
+      }
+    };
+    void loadData();
+  }, []);
 
   return (
     <Card>
@@ -49,12 +75,14 @@ export function RecentTasks() {
         </div>
 
         <div className="space-y-3">
-          {recentTasks.map((task) => (
+          {tasks.map((task) => (
             <div key={task.id} className="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1">
                   <p className="font-medium text-gray-900 text-sm mb-1">{d(task.title, task.titleBn)}</p>
-                  <p className="text-xs text-gray-600">{t("common.assignedTo")}: {d(task.assignedTo, task.assignedToBn)}</p>
+                  <p className="text-xs text-gray-600">
+                    {t("common.assignedTo")}: {Array.isArray(task.assignedTo) ? task.assignedTo.join(", ") : d(task.assignedTo, task.assignedToBn as string)}
+                  </p>
                 </div>
                 <div className="flex flex-col gap-1 items-end">
                   <Badge className={`${priorityStyles[task.priority]} text-xs`}>

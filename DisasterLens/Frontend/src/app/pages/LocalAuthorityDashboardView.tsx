@@ -1,4 +1,5 @@
 import { Users, ShieldCheck, AlertCircle, Siren, UserX } from "lucide-react";
+import { useEffect, useState } from "react";
 import { StatusCard } from "../components/StatusCard";
 import { SilentCommunityAlert } from "../components/SilentCommunityAlert";
 import { VillageStatusTable } from "../components/VillageStatusTable";
@@ -6,9 +7,39 @@ import { VolunteerActivityPanel } from "../components/VolunteerActivityPanel";
 import { AlertTimeline } from "../components/AlertTimeline";
 import { RecentTasks } from "../components/RecentTasks";
 import { useLanguage } from "../i18n/LanguageContext";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+
+type AuthorityOverview = {
+  totalCommunityMembers: number;
+  reportedSafe: number;
+  needHelp: number;
+  needRescue: number;
+  noResponse: number;
+};
 
 export function LocalAuthorityDashboardView() {
   const { t } = useLanguage();
+  const { token } = useAuth();
+  const [overview, setOverview] = useState<AuthorityOverview>({
+    totalCommunityMembers: 0,
+    reportedSafe: 0,
+    needHelp: 0,
+    needRescue: 0,
+    noResponse: 0,
+  });
+
+  useEffect(() => {
+    const loadOverview = async () => {
+      try {
+        const data = await api.get<AuthorityOverview>("/authority/dashboard/overview", token);
+        setOverview(data);
+      } catch (error) {
+        console.error("Failed to load authority overview", error);
+      }
+    };
+    void loadOverview();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -26,11 +57,11 @@ export function LocalAuthorityDashboardView() {
         <section className="mb-8">
           <h2 className="text-xl font-semibold text-gray-900 mb-4">{t("dashboard.communityOverview")}</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-            <StatusCard title={t("dashboard.totalCommunityMembers")} value={2547} icon={Users} variant="default" />
-            <StatusCard title={t("status.reportedSafe")} value={1351} icon={ShieldCheck} variant="success" />
-            <StatusCard title={t("status.needHelp")} value={49} icon={AlertCircle} variant="warning" />
-            <StatusCard title={t("status.needRescue")} value={6} icon={Siren} variant="danger" />
-            <StatusCard title={t("status.noResponse")} value={828} icon={UserX} variant="default" />
+            <StatusCard title={t("dashboard.totalCommunityMembers")} value={overview.totalCommunityMembers} icon={Users} variant="default" />
+            <StatusCard title={t("status.reportedSafe")} value={overview.reportedSafe} icon={ShieldCheck} variant="success" />
+            <StatusCard title={t("status.needHelp")} value={overview.needHelp} icon={AlertCircle} variant="warning" />
+            <StatusCard title={t("status.needRescue")} value={overview.needRescue} icon={Siren} variant="danger" />
+            <StatusCard title={t("status.noResponse")} value={overview.noResponse} icon={UserX} variant="default" />
           </div>
         </section>
 

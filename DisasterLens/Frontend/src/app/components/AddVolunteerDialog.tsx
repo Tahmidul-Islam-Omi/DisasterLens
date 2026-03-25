@@ -13,17 +13,28 @@ import { useLanguage } from "../i18n/LanguageContext";
 interface AddVolunteerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSubmit?: (payload: Record<string, unknown>) => Promise<void> | void;
 }
 
-export function AddVolunteerDialog({ open, onOpenChange }: AddVolunteerDialogProps) {
+export function AddVolunteerDialog({ open, onOpenChange, onSubmit }: AddVolunteerDialogProps) {
   const { t } = useLanguage();
   const [formData, setFormData] = useState({
     name: "", age: "", gender: "", phone: "", email: "", village: "", address: "", skills: "", experience: "", availability: "", emergencyContact: "", emergencyPhone: "",
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Volunteer data:", formData);
+    if (onSubmit) {
+      await onSubmit({
+        name: formData.name,
+        nameBn: formData.name,
+        phone: formData.phone,
+        assignedArea: formData.village,
+        assignedAreaBn: formData.village,
+        status: "available",
+        tasksCompleted: 0,
+      });
+    }
     onOpenChange(false);
     setFormData({ name: "", age: "", gender: "", phone: "", email: "", village: "", address: "", skills: "", experience: "", availability: "", emergencyContact: "", emergencyPhone: "" });
   };

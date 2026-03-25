@@ -11,11 +11,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Checkbox } from "./ui/checkbox";
 import { Badge } from "./ui/badge";
 import { useLanguage } from "../i18n/LanguageContext";
-import { volunteerOptions } from "../data/mockData";
+
+type VolunteerOption = {
+  id: string;
+  name: string;
+  nameBn: string;
+  status: string;
+};
 
 interface AssignTaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSubmit?: (payload: Record<string, unknown>) => Promise<void> | void;
+  volunteerOptions?: VolunteerOption[];
 }
 
 const volunteerStatusStyles: Record<string, string> = {
@@ -30,16 +38,38 @@ const volunteerStatusKeys: Record<string, string> = {
   "off-duty": "status.offDuty",
 };
 
-export function AssignTaskDialog({ open, onOpenChange }: AssignTaskDialogProps) {
+export function AssignTaskDialog({ open, onOpenChange, onSubmit, volunteerOptions = [] }: AssignTaskDialogProps) {
   const { t, d } = useLanguage();
   const [formData, setFormData] = useState({
     title: "", type: "", priority: "", description: "", location: "", duration: "", startDateTime: "", deadline: "", equipmentNeeded: "", contactPerson: "", contactPhone: "", specialInstructions: "", requiredSkills: "",
   });
   const [selectedVolunteers, setSelectedVolunteers] = useState<string[]>([]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Task data:", { ...formData, volunteers: selectedVolunteers });
+    if (onSubmit) {
+      await onSubmit({
+        title: formData.title,
+        titleBn: formData.title,
+        type: formData.type,
+        typeBn: formData.type,
+        priority: formData.priority,
+        location: formData.location,
+        locationBn: formData.location,
+        assignedTo: selectedVolunteers.map((id) => getVolunteerName(id)),
+        assignedToBn: selectedVolunteers.map((id) => getVolunteerName(id)),
+        status: selectedVolunteers.length > 0 ? "assigned" : "pending",
+        progress: 0,
+        deadline: formData.deadline,
+        deadlineBn: formData.deadline,
+        description: formData.description,
+        startTime: formData.startDateTime,
+        equipmentNeeded: formData.equipmentNeeded
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      });
+    }
     onOpenChange(false);
     setFormData({ title: "", type: "", priority: "", description: "", location: "", duration: "", startDateTime: "", deadline: "", equipmentNeeded: "", contactPerson: "", contactPhone: "", specialInstructions: "", requiredSkills: "" });
     setSelectedVolunteers([]);
@@ -154,7 +184,15 @@ export function AssignTaskDialog({ open, onOpenChange }: AssignTaskDialogProps) 
                       {selectedVolunteers.map((volunteerId) => (
                         <Badge key={volunteerId} className="bg-blue-100 text-blue-800 pr-1 pl-3 py-1.5">
                           {getVolunteerName(volunteerId)}
-                          <button type="button" onClick={() => removeVolunteer(volunteerId)} className="ml-2 hover:bg-blue-200 rounded-full p-0.5"><X className="w-3 h-3" /></button>
+                          <button
+                            type="button"
+                            onClick={() => removeVolunteer(volunteerId)}
+                            className="ml-2 hover:bg-blue-200 rounded-full p-0.5"
+                            title="Remove volunteer"
+                            aria-label="Remove volunteer"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
                         </Badge>
                       ))}
                     </div>

@@ -1,35 +1,75 @@
 import { AlertCircle, Send, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { Checkbox } from "../components/ui/checkbox";
 import { useLanguage } from "../i18n/LanguageContext";
-import { villages } from "../data/mockData";
+import { api } from "../lib/api";
+import { useAuth } from "../contexts/AuthContext";
+
+type Village = {
+  id: string;
+  nameKey: string;
+  members: number;
+};
 
 export function LocalAuthorityAlertView() {
   const { t, d } = useLanguage();
+  const { token } = useAuth();
+  const [villages, setVillages] = useState<Village[]>([]);
   const [message, setMessage] = useState("");
   const [simplifiedMessage, setSimplifiedMessage] = useState("");
   const [showSimplified, setShowSimplified] = useState(false);
   const [selectedVillages, setSelectedVillages] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
 
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const data = await api.get<Village[]>("/authority/villages", token);
+        setVillages(data);
+      } catch (error) {
+        console.error("Failed to load villages", error);
+      }
+    };
+    void loadData();
+  }, []);
+
   const handleGenerateSimplified = () => {
     if (!message.trim()) return;
     setIsGenerating(true);
-    // Simulate AI generation
-    setTimeout(() => {
-      setSimplifiedMessage(
-        d(
-          "Flood alert! Water rising in Padma. Move to shelter now. Keep dry food and torch.",
-          "বন্যা সতর্কতা! পদ্মার পানি বাড়ছে। এখনই আশ্রয়কেন্দ্রে যান। শুকনো খাবার ও টর্চ সাথে রাখুন।"
-        )
-      );
-      setShowSimplified(true);
-      setIsGenerating(false);
-    }, 1500);
+    void (async () => {
+      try {
+        const data = await api.post<{ message: string; messageBn: string }>("/authority/alerts/simplify", { message, messageBn: message }, token);
+        setSimplifiedMessage(d(data.message, data.messageBn));
+        setShowSimplified(true);
+      } catch (error) {
+        console.error("Failed to simplify message", error);
+      } finally {
+        setIsGenerating(false);
+      }
+    })();
+  };
+
+  const handleSendBroadcast = async () => {
+    if (!message.trim() || selectedVillages.length === 0) {
+      return;
+    }
+    await api.post(
+      "/authority/alerts",
+      {
+        message,
+        simplifiedMessage: showSimplified ? simplifiedMessage : undefined,
+        villageIds: selectedVillages,
+      },
+      token,
+    );
+    setMessage("");
+    setSimplifiedMessage("");
+    setShowSimplified(false);
+    setSelectedVillages([]);
   };
 
   const toggleVillage = (id: string) => {
@@ -105,7 +145,7 @@ export function LocalAuthorityAlertView() {
                 </div>
               </div>
 
-              <Button className="w-full bg-blue-900 h-12 text-lg">
+              <Button className="w-full bg-blue-900 h-12 text-lg" onClick={handleSendBroadcast}>
                 <Send className="w-5 h-5 mr-2" />
                 {t("alert.sendBroadcast")}
               </Button>

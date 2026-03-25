@@ -1,45 +1,57 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useLanguage } from '../i18n/LanguageContext';
-import { MapPin, Radar, Crosshair, Save, CheckCircle, AlertCircle } from 'lucide-react';
+import { MapPin, Radar, Save, CheckCircle, AlertCircle } from 'lucide-react';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
+import { VolunteerCoverageMap, type CoveragePoint } from '../components/VolunteerCoverageMap';
 
 export function AddCoverageView() {
   const navigate = useNavigate();
   const { t } = useLanguage();
-  const [location, setLocation] = setLocationState('Sylhet Sadar, Sector 4');
+  const { token, user } = useAuth();
+  const [location, setLocation] = useState(user?.assignedArea || 'Sylhet Sadar, Sector 4');
   const [radius, setRadius] = useState<number>(2);
+  const [latitude, setLatitude] = useState<number>(23.8103);
+  const [longitude, setLongitude] = useState<number>(90.4125);
+  const [usedGps, setUsedGps] = useState(false);
   const [status, setStatus] = useState<'idle' | 'saving' | 'success'>('idle');
 
-  function setLocationState(initial: string) {
-    return useState(initial);
-  }
+  const previewPoints = useMemo<CoveragePoint[]>(() => {
+    return [
+      {
+        id: 'preview-point',
+        teamName: user?.name || 'Volunteer Team',
+        locationName: location,
+        lat: latitude,
+        lng: longitude,
+        radiusKm: radius,
+      },
+    ];
+  }, [location, latitude, longitude, radius, user]);
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatus('saving');
     
     try {
-      const existing = JSON.parse(localStorage.getItem('volunteer_coverages') || '[]');
-      const newCoverage = {
-        id: 'v-' + Date.now(),
-        name: 'Team Alpha (You)',
-        location: location,
-        radius: radius,
-        // Assign random coords within the map view bounds for demo purposes
-        x: Math.floor(Math.random() * 500) + 150,
-        y: Math.floor(Math.random() * 250) + 100,
-        timestamp: Date.now()
-      };
-      localStorage.setItem('volunteer_coverages', JSON.stringify([...existing, newCoverage]));
+      await api.post('/volunteer/coverage-updates', {
+        team_code: 'TEAM-WEB',
+        team_name: user?.name || 'Volunteer Team',
+        location_name: location,
+        radius_km: radius,
+        latitude,
+        longitude,
+        used_gps: usedGps,
+        status_note: 'Coverage updated from app',
+        source: 'web',
+      }, token);
+      setStatus('success');
+      setTimeout(() => navigate('/volunteer-coverage'), 1200);
     } catch (err) {
       console.error("Failed to save coverage:", err);
+      setStatus('idle');
     }
-
-    // Simulate API/Database call
-    setTimeout(() => {
-      setStatus('success');
-      setTimeout(() => navigate('/volunteer-dashboard'), 1500);
-    }, 1000);
   };
 
   return (
@@ -59,12 +71,13 @@ export function AddCoverageView() {
             
             {/* Location Field */}
             <div className="space-y-3">
-              <label className="block text-sm font-bold text-gray-900">{t('current_location')}</label>
+              <label htmlFor="coverage-location" className="block text-sm font-bold text-gray-900">{t('current_location')}</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <MapPin className="w-5 h-5 text-gray-400" />
                 </div>
                 <input
+                  id="coverage-location"
                   type="text"
                   required
                   className="pl-10 w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-[#1E3A8A] focus:border-[#1E3A8A] block p-2.5"
@@ -72,23 +85,22 @@ export function AddCoverageView() {
                   onChange={(e) => setLocation(e.target.value)}
                   placeholder="e.g. Sunamganj Sector 3"
                 />
-                <button type="button" className="absolute inset-y-0 right-0 pr-3 flex items-center text-blue-600 hover:text-blue-800 text-xs font-semibold">
-                  <Crosshair className="w-4 h-4 mr-1" /> {t('use_gps')}
-                </button>
               </div>
             </div>
 
             {/* Radius Field */}
             <div className="space-y-3">
-              <label className="block text-sm font-bold text-gray-900">{t('operational_radius')}</label>
+              <label htmlFor="coverage-radius" className="block text-sm font-bold text-gray-900">{t('operational_radius')}</label>
               <div className="flex items-center gap-4">
                 <input
+                  id="coverage-radius"
                   type="range"
                   min="0.5"
                   max="10"
                   step="0.5"
                   value={radius}
                   onChange={(e) => setRadius(parseFloat(e.target.value))}
+                  title={t('operational_radius')}
                   className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#1E3A8A]"
                 />
                 <div className="w-20 px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-center font-bold text-gray-900">
@@ -100,33 +112,25 @@ export function AddCoverageView() {
 
             {/* Map Preview */}
             <div className="space-y-3 pt-4 border-t border-gray-100">
-              <label className="block text-sm font-bold text-gray-900 flex items-center gap-2">
+              <label className="text-sm font-bold text-gray-900 flex items-center gap-2">
                 <Radar className="w-4 h-4 text-gray-400" /> {t('coverage_preview')}
               </label>
-              <div className="h-48 bg-blue-50/50 rounded-lg border border-gray-200 relative overflow-hidden flex items-center justify-center">
-                {/* Simulated Map Grid */}
-                <div className="absolute inset-0 opacity-20">
-                  <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1E3A8A" strokeWidth="0.5"/>
-                      </pattern>
-                    </defs>
-                    <rect width="100%" height="100%" fill="url(#grid)" />
-                  </svg>
-                </div>
-                
-                {/* Simulated Coverage Circle */}
-                <div 
-                  className="absolute bg-green-500/20 border-2 border-green-500/50 rounded-full flex items-center justify-center transition-all duration-300"
-                  style={{ 
-                    width: `${Math.max(40, radius * 20)}px`, 
-                    height: `${Math.max(40, radius * 20)}px` 
-                  }}
-                >
-                  <div className="w-3 h-3 bg-blue-600 rounded-full border-2 border-white shadow-sm absolute"></div>
-                </div>
-              </div>
+              <VolunteerCoverageMap
+                points={previewPoints}
+                selectedPoint={{ lat: latitude, lng: longitude, radiusKm: radius, label: location }}
+                onSelectPoint={(point) => {
+                  setLatitude(point.lat);
+                  setLongitude(point.lng);
+                  if (point.label) {
+                    setLocation(point.label);
+                  }
+                  setUsedGps(point.label === 'Current Location');
+                }}
+                heightClassName="h-72"
+              />
+              <p className="text-xs text-gray-500">
+                Lat: {latitude.toFixed(5)} , Lng: {longitude.toFixed(5)}
+              </p>
             </div>
 
           </div>
