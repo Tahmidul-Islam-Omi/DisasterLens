@@ -185,7 +185,6 @@ export default function DisasterDetailsView() {
         {/* Selected Disaster Details */}
         <div className="flex-1 overflow-y-auto">
           <div className="p-6 max-w-7xl mx-auto space-y-6">
-            
             {/* Header / Stats */}
             <div>
               <div className="flex items-center gap-2 mb-4">

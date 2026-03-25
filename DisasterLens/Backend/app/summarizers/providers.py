@@ -4,6 +4,9 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from app.config.settings import settings
+from app.services.llm_gateway import gemini_gateway
+
 
 @dataclass
 class SummaryResult:
@@ -43,13 +46,23 @@ class GeminiSummarizer(SummarizerAdapter):
         return "gemini"
 
     async def summarize(self, title: str, text: str, language: str = "en") -> SummaryResult:
-        summary = extractive_summary(title, text)
+        summary = await self._summarize_with_gemini_api(title=title, text=text, language=language)
+        model_name = settings.GEMINI_MODEL if settings.GEMINI_API_KEY else "gemini-heuristic-fallback"
         return SummaryResult(
             provider=self.provider_key,
-            model="gemini-heuristic-fallback",
+            model=model_name,
             summary=summary,
             confidence=0.6,
         )
+
+    async def _summarize_with_gemini_api(self, title: str, text: str, language: str) -> str:
+        if not settings.GEMINI_API_KEY:
+            return extractive_summary(title, text)
+
+        generated = await gemini_gateway.summarize(title=title, text=text, language=language)
+        if generated:
+            return generated
+        return extractive_summary(title, text)
 
 
 class MistralSummarizer(SummarizerAdapter):

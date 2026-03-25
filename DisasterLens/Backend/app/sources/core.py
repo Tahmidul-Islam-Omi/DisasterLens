@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable
 from urllib.parse import urljoin
+import xml.etree.ElementTree as ET
 
 import httpx
 from bs4 import BeautifulSoup
@@ -99,7 +101,10 @@ def extract_environment_links(listing_html: str, listing_url: str) -> list[str]:
         absolute_url = urljoin(listing_url, href)
         if "prothomalo.com" not in absolute_url:
             continue
-        if "/environment" not in absolute_url:
+        # Keep environment pages, and also allow article URLs discovered from that listing.
+        if "/environment" not in absolute_url and "/bangladesh/" not in absolute_url:
+            continue
+        if any(part in absolute_url for part in ["/photo", "/video", "/topic", "/author"]):
             continue
         links.append(absolute_url)
 
@@ -113,9 +118,41 @@ def extract_environment_links(listing_html: str, listing_url: str) -> list[str]:
     return unique_links
 
 
+def extract_more_listing_links(listing_html: str, listing_url: str) -> list[str]:
+    """Extract Bangla 'আরও' and pagination links from listing HTML."""
+    soup = BeautifulSoup(listing_html, "html.parser")
+    candidates: list[str] = []
+
+    for anchor in soup.find_all("a", href=True):
+        text = normalize_whitespace(anchor.get_text(" ", strip=True)).lower()
+        href = anchor["href"].strip()
+        absolute_url = urljoin(listing_url, href)
+
+        looks_like_more = any(
+            token in text
+            for token in ["আরও", "আরো", "more", "load more", "next", "পরবর্তী"]
+        )
+        looks_like_pagination = any(token in absolute_url for token in ["page=", "?p=", "/page/"])
+
+        if looks_like_more or looks_like_pagination:
+            if "prothomalo.com" in absolute_url and "/environment" in absolute_url:
+                candidates.append(absolute_url)
+
+    seen: set[str] = set()
+    unique_links: list[str] = []
+    for link in candidates:
+        if link in seen:
+            continue
+        seen.add(link)
+        unique_links.append(link)
+    return unique_links
+
+
 def clean_prothom_alo_article(html: str, article_url: str) -> dict[str, str | None]:
     """Clean and structure Prothom Alo article HTML into extraction-friendly fields."""
     soup = BeautifulSoup(html, "html.parser")
+
+    json_ld_nodes = soup.find_all("script", attrs={"type": "application/ld+json"})
 
     for tag in soup(["script", "style", "noscript", "svg", "nav", "footer", "header", "aside", "form"]):
         tag.decompose()
@@ -126,6 +163,10 @@ def clean_prothom_alo_article(html: str, article_url: str) -> dict[str, str | No
         title = normalize_whitespace(h1.get_text(" ", strip=True))
     if not title and soup.title:
         title = normalize_whitespace(soup.title.get_text(" ", strip=True))
+    if not title:
+        og_title = soup.find("meta", attrs={"property": "og:title"})
+        if og_title and og_title.get("content"):
+            title = normalize_whitespace(str(og_title["content"]))
 
     published = None
     time_tag = soup.find("time")
@@ -138,11 +179,16 @@ def clean_prothom_alo_article(html: str, article_url: str) -> dict[str, str | No
             published = normalize_whitespace(meta_time["content"])
 
     article = soup.find("article")
-    paragraph_nodes = article.find_all("p") if article else soup.find_all("p")
+    paragraph_nodes = article.find_all("p") if article else []
+    if not paragraph_nodes:
+        paragraph_nodes = soup.select("div.story-element p, div.story-content p, p")
     paragraphs = [normalize_whitespace(node.get_text(" ", strip=True)) for node in paragraph_nodes]
     paragraphs = [p for p in paragraphs if len(p) > 20]
 
     clean_text = normalize_whitespace("\n".join(paragraphs))
+
+    if not clean_text:
+        clean_text = _extract_article_body_from_jsonld(json_ld_nodes)
 
     return {
         "url": article_url,
@@ -150,6 +196,26 @@ def clean_prothom_alo_article(html: str, article_url: str) -> dict[str, str | No
         "published_at": published,
         "clean_text": clean_text,
     }
+
+
+def _extract_article_body_from_jsonld(nodes: list[Any]) -> str:
+    for node in nodes:
+        raw = node.get_text(strip=True)
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            continue
+
+        candidates = parsed if isinstance(parsed, list) else [parsed]
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            body = item.get("articleBody") or item.get("description")
+            if isinstance(body, str) and body.strip():
+                return normalize_whitespace(body)
+    return ""
 
 
 def infer_language(text: str) -> str:
@@ -175,9 +241,18 @@ class ProthomAloAdapter(SourceAdapter):
         return settings.SOURCE_ENABLE_PROTHOM_ALO
 
     async def collect_articles(self, client: httpx.AsyncClient) -> list[SourceArticle]:
-        listing_html = await self._fetch_listing(client)
-        links = extract_environment_links(listing_html, settings.PROTHOM_ALO_ENVIRONMENT_URL)
+        discovered_article_links: list[str] = []
+        listing_pages = await self._crawl_listing_pages(client)
+
+        for listing_html, listing_url in listing_pages:
+            discovered_article_links.extend(extract_environment_links(listing_html, listing_url))
+
+        links = self._unique(discovered_article_links)
+        if not links:
+            links = await self._discover_links_from_sitemap(client)
         links = links[: settings.NEWS_MAX_ARTICLES_PER_RUN]
+
+        logger.info("Prothom Alo discovered_links=%d", len(links))
 
         articles: list[SourceArticle] = []
         for url in links:
@@ -191,8 +266,63 @@ class ProthomAloAdapter(SourceAdapter):
         logger.info("Prothom Alo collected=%d", len(articles))
         return articles
 
-    async def _fetch_listing(self, client: httpx.AsyncClient) -> str:
-        response = await client.get(settings.PROTHOM_ALO_ENVIRONMENT_URL)
+    async def _crawl_listing_pages(self, client: httpx.AsyncClient) -> list[tuple[str, str]]:
+        max_pages = max(1, settings.PROTHOM_ALO_MAX_LISTING_PAGES)
+        queue: list[str] = [settings.PROTHOM_ALO_ENVIRONMENT_URL]
+        visited: set[str] = set()
+        pages: list[tuple[str, str]] = []
+
+        while queue and len(pages) < max_pages:
+            listing_url = queue.pop(0)
+            if listing_url in visited:
+                continue
+
+            visited.add(listing_url)
+            try:
+                html = await self._fetch_listing(client, listing_url)
+                pages.append((html, listing_url))
+
+                for more_url in extract_more_listing_links(html, listing_url):
+                    if more_url not in visited and more_url not in queue:
+                        queue.append(more_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Prothom Alo listing fetch failed url=%s err=%s", listing_url, exc)
+
+        logger.info("Prothom Alo listing_pages=%d", len(pages))
+        return pages
+
+    async def _discover_links_from_sitemap(self, client: httpx.AsyncClient) -> list[str]:
+        """Fallback for JS-heavy listing pages: discover article URLs from sitemap."""
+        discovered: list[str] = []
+        try:
+            sitemap_url = "https://www.prothomalo.com/sitemap.xml"
+            root_xml = (await client.get(sitemap_url)).text
+            sitemap_urls = _extract_sitemap_urls(root_xml)
+            # Limit traversal for speed in ingestion runs.
+            for child in sitemap_urls[:15]:
+                if "news" not in child and "sitemap" not in child:
+                    continue
+                child_xml = (await client.get(child)).text
+                article_urls = _extract_urlset_links(child_xml)
+                for url in article_urls:
+                    if "/environment" in url:
+                        discovered.append(url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Prothom Alo sitemap fallback failed err=%s", exc)
+
+        seen: set[str] = set()
+        unique: list[str] = []
+        for url in discovered:
+            if url in seen:
+                continue
+            seen.add(url)
+            unique.append(url)
+
+        logger.info("Prothom Alo sitemap_discovered=%d", len(unique))
+        return unique
+
+    async def _fetch_listing(self, client: httpx.AsyncClient, listing_url: str) -> str:
+        response = await client.get(listing_url)
         response.raise_for_status()
         return response.text
 
@@ -205,6 +335,7 @@ class ProthomAloAdapter(SourceAdapter):
         clean_text = str(cleaned.get("clean_text") or "").strip()
 
         if not title or not clean_text:
+            logger.info("Prothom Alo skipped empty article url=%s", url)
             return None
         if not is_disaster_related(title, clean_text):
             return None
@@ -239,6 +370,17 @@ class ProthomAloAdapter(SourceAdapter):
                 tags.append(tag)
         return tags
 
+    @staticmethod
+    def _unique(urls: list[str]) -> list[str]:
+        seen: set[str] = set()
+        unique_urls: list[str] = []
+        for url in urls:
+            if url in seen:
+                continue
+            seen.add(url)
+            unique_urls.append(url)
+        return unique_urls
+
 
 class DailyStarAdapter(SourceAdapter):
     """Scaffold adapter so Daily Star can be enabled without core refactor."""
@@ -269,3 +411,20 @@ def get_enabled_sources() -> list[SourceAdapter]:
 def iter_prothom_alo_urls(listing_html: str) -> Iterable[str]:
     """Helper kept for testing: parse URLs without network access."""
     return extract_environment_links(listing_html, settings.PROTHOM_ALO_ENVIRONMENT_URL)
+
+
+def _extract_sitemap_urls(xml_text: str) -> list[str]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    urls: list[str] = []
+    for loc in root.findall(".//{*}loc"):
+        if loc.text:
+            urls.append(loc.text.strip())
+    return urls
+
+
+def _extract_urlset_links(xml_text: str) -> list[str]:
+    return _extract_sitemap_urls(xml_text)

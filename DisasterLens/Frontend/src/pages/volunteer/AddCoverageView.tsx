@@ -1,41 +1,181 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router';
+import React, { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, CheckCircle, Crosshair, MapPin, Radar, Save } from 'lucide-react';
+import { AlertCircle, CheckCircle, Crosshair, MapPin, Radar, Save, Search } from 'lucide-react';
+import { MapContainer, TileLayer, Circle, CircleMarker, useMap, useMapEvents } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+
+import { api } from '../../api/client';
+
+type ClickSelectorProps = {
+  onPick: (lat: number, lng: number) => void;
+};
+
+function MapClickSelector({ onPick }: ClickSelectorProps) {
+  useMapEvents({
+    click(event) {
+      onPick(event.latlng.lat, event.latlng.lng);
+    },
+  });
+
+  return null;
+}
+
+type RecenterProps = {
+  center: [number, number];
+};
+
+function RecenterMap({ center }: RecenterProps) {
+  const map = useMap();
+  map.setView(center);
+  return null;
+}
 
 export default function AddCoverageView() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [location, setLocation] = useState('Sylhet Sadar, Sector 4');
   const [radius, setRadius] = useState<number>(2);
+  const [latitude, setLatitude] = useState<number>(24.8949);
+  const [longitude, setLongitude] = useState<number>(91.8687);
+  const [usedGps, setUsedGps] = useState<boolean>(false);
   const [status, setStatus] = useState<'idle' | 'saving' | 'success'>('idle');
+  const [searchingLocation, setSearchingLocation] = useState(false);
+  const [detectingGps, setDetectingGps] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault();
-    setStatus('saving');
-    
+  const center = useMemo<[number, number]>(() => [latitude, longitude], [latitude, longitude]);
+
+  const reverseGeocode = async (lat: number, lng: number) => {
     try {
-      const existing = JSON.parse(localStorage.getItem('volunteer_coverages') || '[]');
-      const newCoverage = {
-        id: 'v-' + Date.now(),
-        name: t('team_alpha_you'),
-        location: location,
-        radius: radius,
-        // Assign random coords within the map view bounds for demo purposes
-        x: Math.floor(Math.random() * 500) + 150,
-        y: Math.floor(Math.random() * 250) + 100,
-        timestamp: Date.now()
-      };
-      localStorage.setItem('volunteer_coverages', JSON.stringify([...existing, newCoverage]));
-    } catch (err) {
-      console.error("Failed to save coverage:", err);
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`;
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const label = data?.display_name;
+      if (label) setLocation(label);
+    } catch {
+      // Keep coordinate selection functional even if reverse lookup fails.
+    }
+  };
+
+  const searchLocation = async () => {
+    if (!location.trim()) {
+      setError('Please enter a location to search.');
+      return;
     }
 
-    // Simulate API/Database call
-    setTimeout(() => {
+    setSearchingLocation(true);
+    setError('');
+
+    try {
+      const query = encodeURIComponent(`${location}, Bangladesh`);
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${query}&limit=1`;
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Location search failed.');
+      }
+
+      const results = await response.json();
+      if (!Array.isArray(results) || results.length === 0) {
+        throw new Error('No matching location found.');
+      }
+
+      const first = results[0];
+      const lat = Number(first.lat);
+      const lng = Number(first.lon);
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        throw new Error('Invalid location coordinates from search result.');
+      }
+
+      setLatitude(lat);
+      setLongitude(lng);
+      setUsedGps(false);
+    } catch (err: any) {
+      setError(err?.message || 'Unable to search location right now.');
+    } finally {
+      setSearchingLocation(false);
+    }
+  };
+
+  const detectLocation = () => {
+    if (!navigator.geolocation) {
+      setError('Geolocation is not supported in this browser.');
+      return;
+    }
+
+    setDetectingGps(true);
+    setError('');
+
+    const onSuccess = async (position: GeolocationPosition) => {
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      setLatitude(lat);
+      setLongitude(lng);
+      setUsedGps(true);
+      await reverseGeocode(lat, lng);
+      setDetectingGps(false);
+    };
+
+    const onError = (geoError: GeolocationPositionError) => {
+      if (geoError.code === geoError.PERMISSION_DENIED) {
+        setError('Location permission denied. Please allow browser location access and try again.');
+      } else if (geoError.code === geoError.TIMEOUT) {
+        setError('GPS timeout. Try again in open sky or enter/search location manually.');
+      } else {
+        setError('Unable to detect your location. You can still search location or click on map.');
+      }
+      setDetectingGps(false);
+    };
+
+    navigator.geolocation.getCurrentPosition(onSuccess, onError, {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 0,
+    });
+  };
+
+  const handleMapPick = async (lat: number, lng: number) => {
+    setLatitude(lat);
+    setLongitude(lng);
+    setUsedGps(false);
+    setError('');
+    await reverseGeocode(lat, lng);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStatus('saving');
+    setError('');
+
+    try {
+      await api.volunteer.createCoverageUpdate({
+        team_code: 'TEAM-ALPHA',
+        team_name: t('team_alpha_you'),
+        location_name: location,
+        radius_km: radius,
+        latitude,
+        longitude,
+        used_gps: usedGps,
+        status_note: 'Coverage submitted from volunteer entry page',
+        source: 'web',
+      });
+
       setStatus('success');
-      setTimeout(() => navigate('/volunteer-dashboard'), 1500);
-    }, 1000);
+      setTimeout(() => navigate('/volunteer-coverage'), 900);
+    } catch (err: any) {
+      setStatus('idle');
+      setError(err?.message || 'Failed to save coverage update.');
+    }
   };
 
   return (
@@ -66,12 +206,37 @@ export default function AddCoverageView() {
                   className="pl-10 w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-[#1E3A8A] focus:border-[#1E3A8A] block p-2.5"
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      searchLocation();
+                    }
+                  }}
                   placeholder="e.g. Sunamganj Sector 3"
                 />
-                <button type="button" className="absolute inset-y-0 right-0 pr-3 flex items-center text-blue-600 hover:text-blue-800 text-xs font-semibold">
-                  <Crosshair className="w-4 h-4 mr-1" /> {t('use_gps')}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={searchLocation}
+                  disabled={searchingLocation}
+                  className="px-3 py-1.5 text-xs rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-60 inline-flex items-center gap-1"
+                >
+                  <Search className="w-3 h-3" /> {searchingLocation ? 'Searching...' : 'Search on map'}
+                </button>
+                <button
+                  type="button"
+                  onClick={detectLocation}
+                  disabled={detectingGps}
+                  className="px-3 py-1.5 text-xs rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-60 inline-flex items-center gap-1"
+                >
+                  <Crosshair className="w-3 h-3" /> {detectingGps ? 'Detecting GPS...' : t('use_gps')}
                 </button>
               </div>
+              <p className="text-xs text-gray-500">
+                Lat: {latitude.toFixed(5)}, Lng: {longitude.toFixed(5)}
+              </p>
+              <p className="text-xs text-gray-500">Tip: click anywhere on the map to select coordinates.</p>
             </div>
 
             {/* Radius Field */}
@@ -80,6 +245,7 @@ export default function AddCoverageView() {
               <div className="flex items-center gap-4">
                 <input
                   type="range"
+                  aria-label="Operational radius in kilometers"
                   min="0.5"
                   max="10"
                   step="0.5"
@@ -96,32 +262,20 @@ export default function AddCoverageView() {
 
             {/* Map Preview */}
             <div className="space-y-3 pt-4 border-t border-gray-100">
-              <label className="block text-sm font-bold text-gray-900 flex items-center gap-2">
+              <label className="text-sm font-bold text-gray-900 flex items-center gap-2">
                 <Radar className="w-4 h-4 text-gray-400" /> {t('coverage_preview')}
               </label>
               <div className="h-48 bg-blue-50/50 rounded-lg border border-gray-200 relative overflow-hidden flex items-center justify-center">
-                {/* Simulated Map Grid */}
-                <div className="absolute inset-0 opacity-20">
-                  <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1E3A8A" strokeWidth="0.5"/>
-                      </pattern>
-                    </defs>
-                    <rect width="100%" height="100%" fill="url(#grid)" />
-                  </svg>
-                </div>
-                
-                {/* Simulated Coverage Circle */}
-                <div 
-                  className="absolute bg-green-500/20 border-2 border-green-500/50 rounded-full flex items-center justify-center transition-all duration-300"
-                  style={{ 
-                    width: `${Math.max(40, radius * 20)}px`, 
-                    height: `${Math.max(40, radius * 20)}px` 
-                  }}
-                >
-                  <div className="w-3 h-3 bg-blue-600 rounded-full border-2 border-white shadow-sm absolute"></div>
-                </div>
+                <MapContainer center={center} zoom={11} className="h-full w-full" scrollWheelZoom>
+                  <RecenterMap center={center} />
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                  <MapClickSelector onPick={handleMapPick} />
+                  <Circle center={center} radius={radius * 1000} pathOptions={{ color: '#16A34A', fillColor: '#22C55E', fillOpacity: 0.2 }} />
+                  <CircleMarker center={center} radius={7} pathOptions={{ color: '#1D4ED8', fillColor: '#2563EB', fillOpacity: 0.95 }} />
+                </MapContainer>
               </div>
             </div>
 
@@ -130,7 +284,7 @@ export default function AddCoverageView() {
           <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <AlertCircle className="w-4 h-4" />
-              <span>{t('coverage_shared')}</span>
+              <span>{error || t('coverage_shared')}</span>
             </div>
             
             <button

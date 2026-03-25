@@ -15,7 +15,7 @@ import {
   Activity,
   ChevronRight
 } from 'lucide-react';
-import { WeatherCard } from '@/components/common/WeatherCard';
+import { WeatherCard } from '../../components/common/WeatherCard';
 import { useTranslation } from 'react-i18next';
 
 const priorityAreas = [

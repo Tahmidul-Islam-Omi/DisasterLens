@@ -26,5 +26,17 @@ export const api = {
   test: {
     list: () => apiClient('/test/testing'),
     create: (data) => apiClient('/test/testing', { method: 'POST', body: data }),
-  }
+  },
+  ingestion: {
+    runGeoImport: () => apiClient('/ingestion/geo/import', { method: 'POST' }),
+    runNews: () => apiClient('/ingestion/news/run', { method: 'POST' }),
+    runImpactAnalysis: (includeIngestion = true) => apiClient(`/ingestion/impact/run?include_ingestion=${includeIngestion}`, { method: 'POST' }),
+    latestNews: (limit = 5) => apiClient(`/ingestion/news/latest?limit=${limit}`),
+    latestProcessedNews: (limit = 5) => apiClient(`/ingestion/news/processed/latest?limit=${limit}`),
+    latestImpactSummary: () => apiClient('/ingestion/impact/latest'),
+  },
+  volunteer: {
+    createCoverageUpdate: (data) => apiClient('/volunteer/coverage-updates', { method: 'POST', body: data }),
+    latestCoverageUpdates: (limit = 100) => apiClient(`/volunteer/coverage-updates/latest?limit=${limit}`),
+  },
 };

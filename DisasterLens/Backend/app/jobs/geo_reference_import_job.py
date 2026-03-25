@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from datetime import datetime
 from typing import Any
 
 import httpx
+from pymongo import UpdateOne
 
 from app.config.settings import settings
 from app.db.database import get_database
@@ -23,17 +26,29 @@ class GeoReferenceImportJob:
     }
 
     async def run(self) -> dict[str, Any]:
-        timeout = httpx.Timeout(settings.SCRAPER_TIMEOUT_SECONDS)
-        headers = {"User-Agent": settings.SCRAPER_USER_AGENT}
         stats: dict[str, int] = {}
 
-        async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
-            for key, url in self.SOURCE_MAP.items():
-                raw = await self._fetch_json(client, url)
-                records = self._extract_rows(raw)
+        local_payload = self._load_local_geo_data()
+        if local_payload is not None:
+            for key, records in local_payload.items():
                 imported = await self._upsert_collection(key, records)
                 stats[key] = imported
-                logger.info("Geo import key=%s imported=%d", key, imported)
+                logger.info("Geo import(local) key=%s imported=%d", key, imported)
+        elif settings.GEO_FETCH_REMOTE_ON_MISS:
+            timeout = httpx.Timeout(settings.SCRAPER_TIMEOUT_SECONDS)
+            headers = {"User-Agent": settings.SCRAPER_USER_AGENT}
+            async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
+                for key, url in self.SOURCE_MAP.items():
+                    raw = await self._fetch_json(client, url)
+                    records = self._extract_rows(raw)
+                    imported = await self._upsert_collection(key, records)
+                    stats[key] = imported
+                    logger.info("Geo import(remote) key=%s imported=%d", key, imported)
+        else:
+            raise FileNotFoundError(
+                f"Local geo data file not found at '{settings.GEO_DATA_FILE}'. "
+                "Generate it during development or enable GEO_FETCH_REMOTE_ON_MISS=True."
+            )
 
         await self._ensure_indexes()
         return {
@@ -41,6 +56,31 @@ class GeoReferenceImportJob:
             "imported": stats,
             "updated_at": datetime.utcnow().isoformat(),
         }
+
+    def _load_local_geo_data(self) -> dict[str, list[dict[str, Any]]] | None:
+        """Load all geo datasets from one static JSON file generated in development."""
+        path = Path(settings.GEO_DATA_FILE)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        if not path.exists():
+            logger.warning("Geo data file not found path=%s", path)
+            return None
+
+        with path.open("r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+
+        result: dict[str, list[dict[str, Any]]] = {}
+        for key in ("divisions", "districts", "upazilas", "unions"):
+            raw = payload.get(key)
+            if not raw:
+                result[key] = []
+                continue
+            if isinstance(raw, list):
+                result[key] = self._extract_rows(raw)
+            else:
+                result[key] = []
+
+        return result
 
     async def _fetch_json(self, client: httpx.AsyncClient, url: str) -> Any:
         response = await client.get(url)
@@ -58,13 +98,23 @@ class GeoReferenceImportJob:
 
     async def _upsert_collection(self, key: str, records: list[dict[str, Any]]) -> int:
         col = get_database()[f"geo_{key}"]
-        imported = 0
+        if not records:
+            return 0
+
+        ops: list[UpdateOne] = []
         for record in records:
             normalized = self._normalize_record(key, record)
             identity = normalized["_id"]
-            await col.update_one({"_id": identity}, {"$set": normalized}, upsert=True)
-            imported += 1
-        return imported
+            ops.append(UpdateOne({"_id": identity}, {"$set": normalized}, upsert=True))
+
+        chunk_size = 500
+        processed = 0
+        for idx in range(0, len(ops), chunk_size):
+            chunk = ops[idx : idx + chunk_size]
+            if chunk:
+                await col.bulk_write(chunk, ordered=False)
+                processed += len(chunk)
+        return processed
 
     @staticmethod
     def _normalize_record(key: str, record: dict[str, Any]) -> dict[str, Any]:

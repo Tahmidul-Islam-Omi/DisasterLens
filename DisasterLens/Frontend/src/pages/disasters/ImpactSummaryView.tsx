@@ -1,52 +1,133 @@
+import { useEffect, useState } from 'react';
 import { HeartPulse, AlertCircle, Users, Home, DollarSign, MapPin, AlertTriangle, Activity, Clock, Newspaper } from 'lucide-react';
-import { WeatherCard } from '@/components/common/WeatherCard';
+import { api } from '../../api/client';
 import { useTranslation } from 'react-i18next';
 
 export default function ImpactSummaryView() {
   const { t } = useTranslation();
+  const [impactSnapshot, setImpactSnapshot] = useState<any | null>(null);
+  const [processedFeed, setProcessedFeed] = useState<any[]>([]);
+  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
+
+  const formatCount = (value: number | null | undefined) => {
+    const safeValue = Number.isFinite(value) ? Number(value) : 0;
+    return safeValue.toLocaleString();
+  };
+
+  const formatCurrencyBdt = (value: number | null | undefined) => {
+    const safeValue = Number.isFinite(value) ? Number(value) : 0;
+    if (safeValue >= 1000000000) {
+      return `৳${(safeValue / 1000000000).toFixed(1)}B`;
+    }
+    if (safeValue >= 1000000) {
+      return `৳${(safeValue / 1000000).toFixed(1)}M`;
+    }
+    return `৳${safeValue.toLocaleString()}`;
+  };
+
+  const loadImpactData = async () => {
+    try {
+      const [impactRes, processedRes] = await Promise.all([
+        api.ingestion.latestImpactSummary(),
+        api.ingestion.latestProcessedNews(6),
+      ]);
+      setImpactSnapshot(impactRes?.data || null);
+      setProcessedFeed(processedRes?.data || []);
+    } catch (error) {
+      console.error('[ImpactSummaryView] Failed to load impact summaries:', error);
+    }
+  };
+
+  useEffect(() => {
+    loadImpactData();
+  }, []);
+
+  const handleRunAiAnalysis = async () => {
+    if (isRunningAnalysis) return;
+    try {
+      setIsRunningAnalysis(true);
+      await api.ingestion.runImpactAnalysis(true);
+      await loadImpactData();
+    } catch (error) {
+      console.error('[ImpactSummaryView] Failed to run AI impact analysis:', error);
+    } finally {
+      setIsRunningAnalysis(false);
+    }
+  };
+
+  const topStats = {
+    fatalities: formatCount(impactSnapshot?.fatalities),
+    missing: formatCount(impactSnapshot?.missing),
+    rescued: formatCount(impactSnapshot?.rescued),
+    damages: formatCount(impactSnapshot?.damages_count),
+    estimatedLoss: formatCurrencyBdt(impactSnapshot?.estimated_loss_bdt),
+    affectedAreas: formatCount(impactSnapshot?.affected_areas_count),
+    dangerLevel: (() => {
+      const raw = String(impactSnapshot?.danger_level || 'warning').toLowerCase();
+      const map: Record<string, string> = {
+        info: 'Level 1',
+        warning: 'Level 2',
+        high: 'Level 3',
+        critical: 'Level 4',
+      };
+      return map[raw] || 'Level 2';
+    })(),
+  };
+
   return (
     <div className="flex-1 overflow-y-auto p-8 bg-[#F8FAFC]">
       <div className="max-w-7xl mx-auto">
-        <div className="mb-8">
-          <h2 className="text-2xl font-bold text-gray-900">{t('ai_impact_summary')}</h2>
-          <p className="text-gray-500 text-sm mt-1">{t('ai_impact_desc')}</p>
+        <div className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">{t('ai_impact_summary')}</h2>
+            <p className="text-gray-500 text-sm mt-1">{t('ai_impact_desc')}</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRunAiAnalysis}
+            disabled={isRunningAnalysis}
+            className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Activity className="w-4 h-4" />
+            {isRunningAnalysis ? 'Running analysis...' : 'Run AI Analysis'}
+          </button>
         </div>
 
         {/* Top Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-8">
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm text-center">
             <HeartPulse className="w-6 h-6 text-red-600 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-gray-900">42</p>
+            <p className="text-2xl font-bold text-gray-900">{topStats.fatalities}</p>
             <p className="text-xs text-gray-500 font-medium uppercase">{t('fatalities')}</p>
           </div>
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm text-center">
             <AlertCircle className="w-6 h-6 text-orange-500 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-gray-900">128</p>
+            <p className="text-2xl font-bold text-gray-900">{topStats.missing}</p>
             <p className="text-xs text-gray-500 font-medium uppercase">{t('missing')}</p>
           </div>
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm text-center">
             <Users className="w-6 h-6 text-green-600 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-gray-900">3,450</p>
+            <p className="text-2xl font-bold text-gray-900">{topStats.rescued}</p>
             <p className="text-xs text-gray-500 font-medium uppercase">{t('rescued')}</p>
           </div>
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm text-center">
             <Home className="w-6 h-6 text-blue-600 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-gray-900">12k+</p>
+            <p className="text-2xl font-bold text-gray-900">{topStats.damages}</p>
             <p className="text-xs text-gray-500 font-medium uppercase">{t('damages')}</p>
           </div>
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm text-center">
             <DollarSign className="w-6 h-6 text-purple-600 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-gray-900">$45M</p>
+            <p className="text-2xl font-bold text-gray-900">{topStats.estimatedLoss}</p>
             <p className="text-xs text-gray-500 font-medium uppercase">{t('est_loss')}</p>
           </div>
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm text-center">
             <MapPin className="w-6 h-6 text-indigo-600 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-gray-900">14</p>
+            <p className="text-2xl font-bold text-gray-900">{topStats.affectedAreas}</p>
             <p className="text-xs text-gray-500 font-medium uppercase">{t('affected_areas')}</p>
           </div>
           <div className="bg-red-50 p-4 rounded-xl border border-red-200 shadow-sm text-center">
             <AlertTriangle className="w-6 h-6 text-red-600 mx-auto mb-2" />
-            <p className="text-2xl font-bold text-red-700">Level 4</p>
+            <p className="text-2xl font-bold text-red-700">{topStats.dangerLevel}</p>
             <p className="text-xs text-red-600 font-medium uppercase">{t('danger_level')}</p>
           </div>
         </div>
@@ -60,29 +141,36 @@ export default function ImpactSummaryView() {
               <h3 className="text-lg font-semibold text-gray-900">{t('executive_ai_summary')}</h3>
             </div>
             <span className="bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded-full font-medium border border-blue-200">
-              Updated 2 mins ago
+              Updated {impactSnapshot?.snapshot_at ? new Date(impactSnapshot.snapshot_at).toLocaleString() : 'N/A'}
             </span>
           </div>
           <p className="text-gray-700 leading-relaxed text-sm">
-            <strong className="text-gray-900">{t('situation_overview')}</strong> {t('situation_overview_text')} <br/><br/>
-            <strong className="text-gray-900">{t('critical_needs')}</strong> {t('critical_needs_text')}<br/><br/>
-            <strong className="text-gray-900">{t('resource_deployment')}</strong> {t('resource_deployment_text')}
+            {impactSnapshot?.executive_summary_bn || impactSnapshot?.executive_summary_en ? (
+              impactSnapshot.executive_summary_bn || impactSnapshot.executive_summary_en
+            ) : (
+              <>
+                <strong className="text-gray-900">{t('situation_overview')}</strong> {t('situation_overview_text')} <br/><br/>
+                <strong className="text-gray-900">{t('critical_needs')}</strong> {t('critical_needs_text')}<br/><br/>
+                <strong className="text-gray-900">{t('resource_deployment')}</strong> {t('resource_deployment_text')}
+              </>
+            )}
           </p>
           
           <div className="mt-6 pt-4 border-t border-gray-100 flex gap-4">
             <div className="flex-1 bg-red-50 p-3 rounded-lg border border-red-100">
               <p className="text-xs text-red-600 font-semibold uppercase mb-1">{t('priority_actions')}</p>
               <ul className="text-sm text-red-800 space-y-1 list-disc list-inside">
-                <li>{t('action_1')}</li>
-                <li>{t('action_2')}</li>
-                <li>{t('action_3')}</li>
+                {(impactSnapshot?.priority_actions?.length ? impactSnapshot.priority_actions : [t('action_1'), t('action_2'), t('action_3')]).map((action: string, idx: number) => (
+                  <li key={`priority-action-${idx}`}>{action}</li>
+                ))}
               </ul>
             </div>
             <div className="flex-1 bg-amber-50 p-3 rounded-lg border border-amber-100">
               <p className="text-xs text-amber-700 font-semibold uppercase mb-1">{t('renovation_needs')}</p>
               <ul className="text-sm text-amber-800 space-y-1 list-disc list-inside">
-                <li>{t('renovation_1')}</li>
-                <li>{t('renovation_2')}</li>
+                {(impactSnapshot?.recovery_needs?.length ? impactSnapshot.recovery_needs : [t('renovation_1'), t('renovation_2')]).map((need: string, idx: number) => (
+                  <li key={`recovery-need-${idx}`}>{need}</li>
+                ))}
               </ul>
             </div>
           </div>
@@ -188,56 +276,29 @@ export default function ImpactSummaryView() {
             </div>
             
             <div className="flex-1 overflow-y-auto pr-2 space-y-4">
-              {/* Feed Item */}
-              <div className="border-l-2 border-[#DC2626] pl-3 py-1">
-                <p className="text-xs text-gray-400 font-medium mb-1 flex justify-between">
-                  <span>Source: The Daily Star</span>
-                  <span>10 mins ago</span>
-                </p>
-                <p className="text-sm text-gray-800 font-medium">Thousands stranded in Sylhet as major rivers cross danger mark by 120cm.</p>
-                <div className="mt-2 flex gap-2">
-                  <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">Flood</span>
-                  <span className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded border border-red-100">Critical</span>
-                </div>
-              </div>
-
-              {/* Feed Item */}
-              <div className="border-l-2 border-[#1E3A8A] pl-3 py-1">
-                <p className="text-xs text-gray-400 font-medium mb-1 flex justify-between">
-                  <span>Source: Prothom Alo (Translated)</span>
-                  <span>45 mins ago</span>
-                </p>
-                <p className="text-sm text-gray-800 font-medium">Army deployed for rescue operations in remote upazilas of Sunamganj.</p>
-                <div className="mt-2 flex gap-2">
-                  <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">Rescue</span>
-                  <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100">Military</span>
-                </div>
-              </div>
-
-              {/* Feed Item */}
-              <div className="border-l-2 border-orange-400 pl-3 py-1">
-                <p className="text-xs text-gray-400 font-medium mb-1 flex justify-between">
-                  <span>Source: Twitter / X (Verified)</span>
-                  <span>1 hr ago</span>
-                </p>
-                <p className="text-sm text-gray-800 font-medium">Urgent need for drinking water at Shelter Camp 4 in Netrokona. Supplies running out.</p>
-                <div className="mt-2 flex gap-2">
-                  <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">Supplies</span>
-                  <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded border border-amber-100">High Priority</span>
-                </div>
-              </div>
-
-               {/* Feed Item */}
-               <div className="border-l-2 border-gray-300 pl-3 py-1">
-                <p className="text-xs text-gray-400 font-medium mb-1 flex justify-between">
-                  <span>Source: Local Radio</span>
-                  <span>2 hrs ago</span>
-                </p>
-                <p className="text-sm text-gray-800 font-medium">Weather department forecasts additional 150mm rainfall in the next 24 hours.</p>
-                <div className="mt-2 flex gap-2">
-                  <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">Forecast</span>
-                </div>
-              </div>
+              {processedFeed.length === 0 ? (
+                <p className="text-sm text-gray-500">No processed summaries yet. Run ingestion to populate.</p>
+              ) : (
+                processedFeed.map((item, idx) => {
+                  const summary = item.llm_summary_bn || item.llm_summary_en || item.article_text;
+                  const tags = item.hazard_tags || [];
+                  return (
+                    <div key={item.id || `feed-item-${idx}`} className="border-l-2 border-[#1E3A8A] pl-3 py-1">
+                      <p className="text-xs text-gray-400 font-medium mb-1 flex justify-between">
+                        <span>Source: {item.source_name || 'Unknown'}</span>
+                        <span>{item.processed_at ? new Date(item.processed_at).toLocaleTimeString() : 'recent'}</span>
+                      </p>
+                      <p className="text-sm text-gray-800 font-medium line-clamp-2">{item.title || 'Untitled report'}</p>
+                      <p className="text-xs text-gray-600 mt-1 line-clamp-3">{summary}</p>
+                      <div className="mt-2 flex gap-2 flex-wrap">
+                        {tags.length ? tags.map((tag: string) => (
+                          <span key={`${item.id}-${tag}`} className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{tag}</span>
+                        )) : <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">intel</span>}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
 
