@@ -453,22 +453,7 @@ npm run build
 npm run preview
 ```
 
-3. **Deploy the `dist/` directory** to your hosting service:
-   - Vercel
-   - Netlify
-   - AWS S3 + CloudFront
-   - Nginx/Apache
-
-### Production Checklist
-
-- [ ] Set correct `VITE_API_BASE_URL` for production backend
-- [ ] Enable HTTPS
-- [ ] Configure CORS on backend for production domain
-- [ ] Optimize images and assets
-- [ ] Test on multiple devices and browsers
-- [ ] Set up error tracking (Sentry, etc.)
-- [ ] Configure CDN for static assets
-- [ ] Enable gzip/brotli compression
+The build output will be in the `dist/` directory.
 
 ## Troubleshooting
 

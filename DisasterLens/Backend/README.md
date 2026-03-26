@@ -103,7 +103,7 @@ The server will start at `http://localhost:8000` with auto-reload enabled.
 
 ```bash
 # Set DEBUG=False in .env first
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ## API Documentation
@@ -381,35 +381,6 @@ taskkill /PID <PID> /F
 
 # Linux/Mac
 lsof -ti:8000 | xargs kill -9
-```
-
-## Production Deployment
-
-### Recommendations
-
-1. **Use environment variables** for all secrets
-2. **Set DEBUG=False** in production
-3. **Use strong SECRET_KEY** (generate with `openssl rand -hex 32`)
-4. **Enable HTTPS** with reverse proxy (nginx, Caddy)
-5. **Use MongoDB Atlas** or managed MongoDB
-6. **Configure CORS** properly for your frontend domain
-7. **Set up monitoring** and logging
-8. **Use multiple workers** for uvicorn
-9. **Implement rate limiting** for public endpoints
-10. **Regular backups** of MongoDB
-
-### Docker Deployment (Optional)
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ## License
