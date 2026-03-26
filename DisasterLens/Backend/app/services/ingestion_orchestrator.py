@@ -20,6 +20,8 @@ logger = get_logger(__name__)
 INTEL_COLLECTION = "intel_articles"
 RAW_COLLECTION = "news_articles_raw"
 PROCESSED_COLLECTION = "news_articles_processed"
+OFFICIAL_FEED_RAW_COLLECTION = "official_feed_raw"
+OFFICIAL_FEED_ANALYSIS_COLLECTION = "official_feed_analysis"
 IMPACT_SNAPSHOT_COLLECTION = "impact_summary_snapshots"
 
 
@@ -34,6 +36,12 @@ class IngestionOrchestrator:
 
     def _processed_col(self):
         return get_database()[PROCESSED_COLLECTION]
+
+    def _official_feed_raw_col(self):
+        return get_database()[OFFICIAL_FEED_RAW_COLLECTION]
+
+    def _official_feed_analysis_col(self):
+        return get_database()[OFFICIAL_FEED_ANALYSIS_COLLECTION]
 
     def _impact_col(self):
         return get_database()[IMPACT_SNAPSHOT_COLLECTION]
@@ -52,6 +60,10 @@ class IngestionOrchestrator:
         updated = 0
         processed = 0
         errors: list[dict[str, str]] = []
+
+        # Keep sources.txt API records out of news collections by design.
+        await self._raw_col().delete_many({"source_name": "sources_txt"})
+        await self._processed_col().delete_many({"source_name": "sources_txt"})
 
         timeout = httpx.Timeout(settings.SCRAPER_TIMEOUT_SECONDS)
         headers = {"User-Agent": settings.SCRAPER_USER_AGENT}
@@ -127,6 +139,12 @@ class IngestionOrchestrator:
                 await self._intel_col().insert_one(doc)
                 ingested += 1
 
+            if article.source == "sources_txt":
+                raw_id = await self._upsert_official_feed_raw(article=article, content_hash=content_hash)
+                await self._upsert_official_feed_analysis(article=article, summary=summary.summary, raw_id=raw_id)
+                processed += 1
+                continue
+
             raw_id = await self._upsert_news_raw(article=article, content_hash=content_hash)
             await self._upsert_news_processed(article=article, summary=summary.summary, raw_id=raw_id)
             processed += 1
@@ -196,8 +214,64 @@ class IngestionOrchestrator:
 
         await self._processed_col().update_one({"raw_article_id": raw_id}, {"$set": payload}, upsert=True)
 
+    async def _upsert_official_feed_raw(self, article: SourceArticle, content_hash: str):
+        now = datetime.utcnow()
+        payload = {
+            "source_name": article.source,
+            "source_url": article.url,
+            "canonical_url": article.url,
+            "title_raw": article.title,
+            "text_raw": article.clean_text,
+            "published_at_raw": article.published_at,
+            "language_detected": article.language,
+            "ingest_status": "success",
+            "ingested_at": now,
+            "content_hash": content_hash,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        existing = await self._official_feed_raw_col().find_one({"content_hash": content_hash}, {"_id": 1})
+        if existing:
+            await self._official_feed_raw_col().update_one({"_id": existing["_id"]}, {"$set": payload})
+            return existing["_id"]
+
+        inserted = await self._official_feed_raw_col().insert_one(payload)
+        return inserted.inserted_id
+
+    async def _upsert_official_feed_analysis(self, article: SourceArticle, summary: str, raw_id):
+        now = datetime.utcnow()
+        summary_bn = summary if article.language == "bn" else None
+        summary_en = summary if article.language != "bn" else None
+
+        if article.language == "bn":
+            translated_en = await translation_service.translate_bn_to_en(summary)
+            summary_en = translated_en or summary
+
+        payload = {
+            "raw_feed_id": raw_id,
+            "source_name": article.source,
+            "source_url": article.url,
+            "title": article.title,
+            "feed_text": article.clean_text,
+            "published_at": article.published_at,
+            "language": article.language,
+            "hazard_tags": article.tags,
+            "source_metadata": article.metadata,
+            "llm_model": settings.GEMINI_MODEL,
+            "llm_summary_bn": summary_bn,
+            "llm_summary_en": summary_en,
+            "llm_entities": {"source": article.source, "tags": article.tags, "metadata": article.metadata},
+            "llm_confidence": 0.6,
+            "processed_at": now,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        await self._official_feed_analysis_col().update_one({"raw_feed_id": raw_id}, {"$set": payload}, upsert=True)
+
     async def run_impact_analysis(self, max_items: int = 30) -> dict[str, Any] | None:
-        processed = await self._processed_col().find().sort("processed_at", -1).limit(max_items).to_list(length=max_items)
+        processed = await self._collect_analysis_inputs(max_items=max_items)
         if not processed:
             return None
 
@@ -326,6 +400,27 @@ class IngestionOrchestrator:
             "recovery_needs_bn": ["খাদ্য সহায়তা", "চিকিৎসা সহায়তা", "আশ্রয় প্রস্তুতি"],
         }
 
+    async def _collect_analysis_inputs(self, max_items: int) -> list[dict[str, Any]]:
+        # Real news items remain in news_articles_processed; sources.txt API analyses live in official_feed_analysis.
+        news_docs = await (
+            self._processed_col()
+            .find({"source_name": {"$ne": "sources_txt"}})
+            .sort("processed_at", -1)
+            .limit(max_items)
+            .to_list(length=max_items)
+        )
+        feed_docs = await (
+            self._official_feed_analysis_col()
+            .find()
+            .sort("processed_at", -1)
+            .limit(max_items)
+            .to_list(length=max_items)
+        )
+
+        combined = list(news_docs) + list(feed_docs)
+        combined.sort(key=lambda row: row.get("processed_at") or datetime.min, reverse=True)
+        return combined[:max_items]
+
     def _build_snapshot_doc(self, ai_payload: dict[str, Any], source_count: int) -> dict[str, Any]:
         now = datetime.utcnow()
         return {
@@ -345,7 +440,7 @@ class IngestionOrchestrator:
             "priority_actions_bn": ai_payload["priority_actions_bn"],
             "recovery_needs": ai_payload["recovery_needs_en"],
             "recovery_needs_bn": ai_payload["recovery_needs_bn"],
-            "source_refs": [{"source": "news_articles_processed", "count": source_count}],
+            "source_refs": [{"source": "analysis_inputs", "count": source_count}],
             "updated_by_pipeline": "gemini-impact-analysis",
             "created_at": now,
         }
@@ -371,8 +466,24 @@ class IngestionOrchestrator:
         return [self._serialize_value(doc) for doc in docs]
 
     async def get_latest_processed_news(self, limit: int = 20) -> list[dict[str, object]]:
-        cursor = self._processed_col().find().sort("processed_at", -1).limit(limit)
-        docs = await cursor.to_list(length=limit)
+        news_docs = await (
+            self._processed_col()
+            .find({"source_name": {"$ne": "sources_txt"}})
+            .sort("processed_at", -1)
+            .limit(limit)
+            .to_list(length=limit)
+        )
+        feed_docs = await (
+            self._official_feed_analysis_col()
+            .find()
+            .sort("processed_at", -1)
+            .limit(limit)
+            .to_list(length=limit)
+        )
+
+        docs = list(news_docs) + list(feed_docs)
+        docs.sort(key=lambda row: row.get("processed_at") or datetime.min, reverse=True)
+        docs = docs[:limit]
         return [self._serialize_value(doc) for doc in docs]
 
     async def get_latest_impact_snapshot(self) -> dict[str, object] | None:
