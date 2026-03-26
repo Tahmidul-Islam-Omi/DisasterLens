@@ -48,7 +48,16 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     return text;
   };
 
-  const d = (en: string, bn: string) => (lang === "en" ? bnenconvert(en) : bnenconvert(bn));
+  const d = (en: string, bn: string) => {
+    const enValue = String(en || "").trim();
+    const bnValue = String(bn || "").trim();
+
+    if (lang === "en") {
+      return bnenconvert(enValue || bnValue);
+    }
+
+    return bnenconvert(bnValue || enValue);
+  };
 
   return (
     <LanguageContext.Provider value={{ lang, toggleLanguage, t, d, bnenconvert }}>

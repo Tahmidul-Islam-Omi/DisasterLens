@@ -420,7 +420,7 @@ export function ImpactSummaryView() {
                       <span>{timeAgo(item.processed_at)}</span>
                     </p>
                     <p className="text-sm text-gray-800 font-medium">{item.title || 'Latest situational intelligence update'}</p>
-                    <p className="text-xs text-gray-600 mt-1">{d(item.llm_summary_en || '', item.llm_summary_bn || '')}</p>
+                    <p className="text-xs text-gray-600 mt-1">{d(item.llm_summary_en || '', item.llm_summary_bn || '') || t('live_synthesis')}</p>
                     <div className="mt-2 flex gap-2 flex-wrap">
                       {tags.slice(0, 3).map((tag) => (
                         <span key={`${item.id || index}-${tag}`} className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">
