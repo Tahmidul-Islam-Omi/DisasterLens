@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from io import BytesIO
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -403,7 +404,7 @@ class DailyStarAdapter(SourceAdapter):
 
 
 class SourcesTxtAdapter(SourceAdapter):
-    """Generic crawler for URLs listed in Backend/sources.txt."""
+    """Collector for official API/map/PDF sources listed in Backend/sources.txt."""
 
     @property
     def source_key(self) -> str:
@@ -423,62 +424,277 @@ class SourcesTxtAdapter(SourceAdapter):
         articles: list[SourceArticle] = []
         for url in unique_targets:
             try:
-                response = await client.get(url)
-                response.raise_for_status()
-                content_type = response.headers.get("content-type", "")
-
-                title = self._title_from_url(url)
-                clean_text = ""
-                if "json" in content_type or "application/json" in content_type:
-                    try:
-                        payload = response.json()
-                        clean_text = normalize_whitespace(json.dumps(payload, ensure_ascii=False)[:20000])
-                    except Exception:  # noqa: BLE001
-                        clean_text = normalize_whitespace(response.text[:20000])
-                elif "text/html" in content_type or "application/xhtml+xml" in content_type:
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    for tag in soup(["script", "style", "noscript", "svg", "nav", "footer", "header", "aside", "form"]):
-                        tag.decompose()
-
-                    h1 = soup.find("h1")
-                    if h1:
-                        title = normalize_whitespace(h1.get_text(" ", strip=True))
-                    elif soup.title:
-                        title = normalize_whitespace(soup.title.get_text(" ", strip=True))
-
-                    paragraph_nodes = soup.find_all("p")
-                    paragraphs = [normalize_whitespace(node.get_text(" ", strip=True)) for node in paragraph_nodes]
-                    paragraphs = [p for p in paragraphs if len(p) > 20]
-                    clean_text = normalize_whitespace("\n".join(paragraphs))
-                    if not clean_text:
-                        clean_text = normalize_whitespace(soup.get_text(" ", strip=True))
-                else:
-                    clean_text = normalize_whitespace(response.text[:16000])
-
-                if not title or not clean_text:
-                    continue
-                if not is_disaster_related(title, clean_text):
-                    continue
-
-                language = infer_language(f"{title} {clean_text}")
-                tags = self._extract_tags(title, clean_text, url)
-                articles.append(
-                    SourceArticle(
-                        source=self.source_key,
-                        url=url,
-                        title=title,
-                        published_at=None,
-                        clean_text=clean_text[:16000],
-                        language=language,
-                        tags=tags,
-                        metadata={"seed": "sources.txt"},
-                    )
-                )
+                collected = await self._collect_source_url(client, url)
+                articles.extend(collected)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sources.txt article parse failed url=%s err=%s", url, exc)
 
         logger.info("SourcesTxt collected=%d", len(articles))
         return articles
+
+    async def _collect_source_url(self, client: httpx.AsyncClient, url: str) -> list[SourceArticle]:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+
+        if "ffwc.gov.bd" in host and "/app/flood-summary" in path:
+            article = await self._collect_ffwc_flood_summary(client, url)
+            return [article] if article else []
+
+        if "unosat-geodrr.cern.ch" in host and "/hazard-risk" in path:
+            article = await self._collect_unosat_hazard_map(client, url)
+            return [article] if article else []
+
+        if "ffwc.gov.bd" in host and "/app/home" in path:
+            output: list[SourceArticle] = []
+            generic_home = await self._collect_generic_source(client, url)
+            if generic_home:
+                output.append(generic_home)
+
+            flood_summary = await self._collect_ffwc_flood_summary(client, "https://www.ffwc.gov.bd/app/flood-summary")
+            if flood_summary:
+                output.append(flood_summary)
+            return output
+
+        article = await self._collect_generic_source(client, url)
+        return [article] if article else []
+
+    async def _collect_ffwc_flood_summary(self, client: httpx.AsyncClient, url: str) -> SourceArticle | None:
+        response = await self._safe_get(client, url)
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        title = "FFWC Flood Summary Bulletin"
+        if soup.title and soup.title.get_text(strip=True):
+            title = normalize_whitespace(soup.title.get_text(" ", strip=True))
+
+        pdf_candidates = self._extract_pdf_links(response.text, url)
+        pdf_text = ""
+        pdf_url = ""
+        for candidate in pdf_candidates:
+            try:
+                pdf_response = await self._safe_get(client, candidate)
+                if "application/pdf" not in pdf_response.headers.get("content-type", "").lower() and not candidate.lower().endswith(".pdf"):
+                    continue
+                extracted = self._extract_pdf_text(pdf_response.content)
+                if extracted:
+                    pdf_text = extracted
+                    pdf_url = candidate
+                    break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("FFWC PDF parse failed url=%s err=%s", candidate, exc)
+
+        page_text = normalize_whitespace(soup.get_text(" ", strip=True))
+        clean_text = normalize_whitespace((pdf_text or page_text)[:30000])
+        if not clean_text:
+            return None
+
+        tags = self._extract_tags(title, clean_text, url)
+        if "flood" not in tags:
+            tags.append("flood")
+
+        metadata: dict[str, Any] = {"seed": "sources.txt", "source_type": "pdf_bulletin"}
+        if pdf_url:
+            metadata["pdf_url"] = pdf_url
+
+        return SourceArticle(
+            source=self.source_key,
+            url=url,
+            title=title,
+            published_at=None,
+            clean_text=clean_text[:20000],
+            language=infer_language(clean_text),
+            tags=tags,
+            metadata=metadata,
+        )
+
+    async def _collect_unosat_hazard_map(self, client: httpx.AsyncClient, url: str) -> SourceArticle | None:
+        response = await self._safe_get(client, url)
+        html = response.text
+
+        endpoints = set(
+            re.findall(
+                r"https?://[^\"'\s]+(?:FeatureServer|MapServer|/rest/services)[^\"'\s]*",
+                html,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        script_sources = [urljoin(url, src.get("src", "")) for src in BeautifulSoup(html, "html.parser").find_all("script", src=True)]
+        for script_url in script_sources[: settings.SOURCE_JS_DISCOVERY_MAX_SCRIPTS]:
+            try:
+                script_response = await self._safe_get(client, script_url)
+                for endpoint in re.findall(
+                    r"https?://[^\"'\s]+(?:FeatureServer|MapServer|/rest/services)[^\"'\s]*",
+                    script_response.text,
+                    flags=re.IGNORECASE,
+                ):
+                    endpoints.add(endpoint)
+            except Exception:  # noqa: BLE001
+                continue
+
+        hazard_words = [
+            word
+            for word in ["Flood inundation", "Storm surge", "Landslide", "Drought", "Earthquake", "Tsunami"]
+            if word.lower() in html.lower()
+        ]
+
+        endpoint_lines = sorted(endpoints)
+        if endpoint_lines:
+            endpoint_block = " ; ".join(endpoint_lines[:20])
+        else:
+            endpoint_block = "No direct ArcGIS REST endpoint found in static HTML; inspect runtime network events."
+
+        clean_text = normalize_whitespace(
+            (
+                "UNOSAT Bangladesh hazard-risk map metadata. "
+                f"Hazard layers seen: {', '.join(hazard_words) or 'Flood, storm surge, landslide, drought, earthquake, tsunami'}. "
+                f"Discovered service endpoints: {endpoint_block}."
+            )[:24000]
+        )
+
+        tags = self._extract_tags("UNOSAT Hazard & Risk", clean_text, url)
+        if "flood" not in tags:
+            tags.append("flood")
+
+        return SourceArticle(
+            source=self.source_key,
+            url=url,
+            title="UNOSAT Bangladesh Hazard & Risk Map",
+            published_at=None,
+            clean_text=clean_text,
+            language="en",
+            tags=tags,
+            metadata={
+                "seed": "sources.txt",
+                "source_type": "map_service_discovery",
+                "service_endpoints": endpoint_lines[:20],
+                "hazard_layers": hazard_words,
+            },
+        )
+
+    async def _collect_generic_source(self, client: httpx.AsyncClient, url: str) -> SourceArticle | None:
+        response = await self._safe_get(client, url)
+        content_type = response.headers.get("content-type", "")
+
+        title = self._title_from_url(url)
+        clean_text = ""
+        discovered_files: list[str] = []
+
+        if "json" in content_type or "application/json" in content_type:
+            try:
+                payload = response.json()
+                clean_text = normalize_whitespace(json.dumps(payload, ensure_ascii=False)[:20000])
+            except Exception:  # noqa: BLE001
+                clean_text = normalize_whitespace(response.text[:20000])
+        elif "text/html" in content_type or "application/xhtml+xml" in content_type:
+            soup = BeautifulSoup(response.text, "html.parser")
+            h1 = soup.find("h1")
+            if h1:
+                title = normalize_whitespace(h1.get_text(" ", strip=True))
+            elif soup.title:
+                title = normalize_whitespace(soup.title.get_text(" ", strip=True))
+
+            for anchor in soup.find_all("a", href=True):
+                href = urljoin(url, anchor["href"])
+                if re.search(r"\.(csv|json|xlsx|xls|pdf|zip)(\?|$)", href, flags=re.IGNORECASE):
+                    discovered_files.append(href)
+
+            paragraph_nodes = soup.find_all("p")
+            paragraphs = [normalize_whitespace(node.get_text(" ", strip=True)) for node in paragraph_nodes]
+            paragraphs = [p for p in paragraphs if len(p) > 20]
+            body_text = "\n".join(paragraphs) if paragraphs else soup.get_text(" ", strip=True)
+            body_text = normalize_whitespace(body_text)
+            if discovered_files:
+                body_text = normalize_whitespace(f"{body_text} Data links: {' ; '.join(discovered_files[:20])}")
+            clean_text = body_text[:20000]
+        else:
+            clean_text = normalize_whitespace(response.text[:16000])
+
+        if not title or not clean_text:
+            return None
+        if not is_disaster_related(title, clean_text):
+            return None
+
+        language = infer_language(f"{title} {clean_text}")
+        tags = self._extract_tags(title, clean_text, url)
+        return SourceArticle(
+            source=self.source_key,
+            url=url,
+            title=title,
+            published_at=None,
+            clean_text=clean_text[:16000],
+            language=language,
+            tags=tags,
+            metadata={"seed": "sources.txt", "discovered_files": discovered_files[:20]},
+        )
+
+    async def _safe_get(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response
+        except Exception as exc:  # noqa: BLE001
+            host = urlparse(url).netloc.lower()
+            allowed_hosts = {
+                item.strip().lower()
+                for item in settings.SOURCE_INSECURE_SSL_HOSTS.split(",")
+                if item.strip()
+            }
+            if host not in allowed_hosts:
+                raise exc
+
+            logger.warning("Retrying with relaxed SSL verification host=%s", host)
+            timeout = httpx.Timeout(settings.SCRAPER_TIMEOUT_SECONDS)
+            headers = {"User-Agent": settings.SCRAPER_USER_AGENT}
+            async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True, verify=False) as insecure_client:
+                retry_response = await insecure_client.get(url)
+                retry_response.raise_for_status()
+                return retry_response
+
+    @staticmethod
+    def _extract_pdf_links(html: str, base_url: str) -> list[str]:
+        soup = BeautifulSoup(html, "html.parser")
+        candidates: list[str] = []
+        attrs = ["href", "src", "data", "data-src", "data-url"]
+
+        for tag in soup.find_all(True):
+            for attr in attrs:
+                value = tag.attrs.get(attr)
+                if not value or not isinstance(value, str):
+                    continue
+                if ".pdf" in value.lower():
+                    candidates.append(urljoin(base_url, value))
+
+        for match in re.findall(r"https?://[^\"'\s]+\.pdf(?:\?[^\"'\s]*)?", html, flags=re.IGNORECASE):
+            candidates.append(match)
+        for match in re.findall(r"/[^\"'\s]+\.pdf(?:\?[^\"'\s]*)?", html, flags=re.IGNORECASE):
+            candidates.append(urljoin(base_url, match))
+
+        seen: set[str] = set()
+        unique_candidates: list[str] = []
+        for item in candidates:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique_candidates.append(item)
+        return unique_candidates
+
+    @staticmethod
+    def _extract_pdf_text(content: bytes) -> str:
+        try:
+            from pypdf import PdfReader  # type: ignore
+
+            reader = PdfReader(BytesIO(content))
+            chunks: list[str] = []
+            for page in reader.pages[:12]:
+                text = page.extract_text() or ""
+                text = normalize_whitespace(text)
+                if text:
+                    chunks.append(text)
+            return normalize_whitespace("\n".join(chunks))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PDF text extraction failed err=%s", exc)
+            return ""
 
     @staticmethod
     def _extract_tags(title: str, text: str, url: str) -> list[str]:

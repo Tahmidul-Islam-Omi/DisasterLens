@@ -11,3 +11,4 @@ python-jose[cryptography]
 passlib[bcrypt]
 bcrypt
 deep-translator==1.11.4
+pypdf==5.4.0

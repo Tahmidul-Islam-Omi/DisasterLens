@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     SCRAPER_USER_AGENT: str = "DisasterLensBot/1.0 (+https://example.com/contact)"
     SOURCES_TXT_FILE: str = "sources.txt"
     SOURCES_TXT_MAX_URLS: int = 12
+    SOURCE_JS_DISCOVERY_MAX_SCRIPTS: int = 8
+    SOURCE_INSECURE_SSL_HOSTS: str = "ffwc.bwdb.gov.bd"
 
     # AI summarization provider
     AI_SUMMARIZER_PROVIDER: str = "gemini"
