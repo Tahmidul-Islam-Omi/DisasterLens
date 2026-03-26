@@ -1,5 +1,0 @@
-cd Backend
-cp .env.example .env
-.venv/bin/uvicorn app.main:app --reload
-# or
-.venv/bin/python main.py
