@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.config.settings import settings
 from app.db.database import get_database
 from app.services.llm_gateway import gemini_gateway
 from app.services.summarization_service import summarization_service
+from app.services.translation_service import translation_service
 from app.sources.core import SourceArticle, get_enabled_sources
 from app.utils.logger import get_logger
 
@@ -161,9 +163,17 @@ class IngestionOrchestrator:
 
     async def _upsert_news_processed(self, article: SourceArticle, summary: str, raw_id):
         now = datetime.utcnow()
+        summary_bn = summary if article.language == "bn" else None
+        summary_en = summary if article.language != "bn" else None
+
+        if article.language == "bn":
+            translated_en = await translation_service.translate_bn_to_en(summary)
+            summary_en = translated_en or summary
+
         payload = {
             "raw_article_id": raw_id,
             "source_name": article.source,
+            "source_url": article.url,
             "title": article.title,
             "article_text": article.clean_text,
             "published_at": article.published_at,
@@ -174,8 +184,8 @@ class IngestionOrchestrator:
             "affected_upazila_codes": [],
             "linked_event_id": None,
             "llm_model": settings.GEMINI_MODEL,
-            "llm_summary_bn": summary if article.language == "bn" else None,
-            "llm_summary_en": summary if article.language != "bn" else None,
+            "llm_summary_bn": summary_bn,
+            "llm_summary_en": summary_en,
             "llm_entities": {"source": article.source, "tags": article.tags},
             "llm_confidence": 0.6,
             "verification_status": "unverified",
@@ -238,7 +248,17 @@ class IngestionOrchestrator:
             )
             if not ai_payload:
                 return None
-            return self._normalize_ai_payload(ai_payload)
+            normalized = self._normalize_ai_payload(ai_payload)
+
+            has_summary = bool(normalized.get("executive_summary_en") or normalized.get("executive_summary_bn"))
+            has_actions = bool(normalized.get("priority_actions_en") or normalized.get("priority_actions_bn"))
+            has_recovery = bool(normalized.get("recovery_needs_en") or normalized.get("recovery_needs_bn"))
+
+            # If the model returns structurally valid but empty analysis, fallback generator should take over.
+            if not (has_summary and (has_actions or has_recovery)):
+                return None
+
+            return normalized
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini impact analysis failed err=%s", exc)
             return None
@@ -249,9 +269,15 @@ class IngestionOrchestrator:
         if danger not in allowed:
             danger = "warning"
 
+        def clean_line(value: Any) -> str:
+            text = str(value or "").strip()
+            text = re.sub(r"^[\-\*\d\.)\s]+", "", text)
+            text = re.sub(r"\s+", " ", text)
+            return text.strip()
+
         return {
-            "executive_summary_bn": str(payload.get("executive_summary_bn") or ""),
-            "executive_summary_en": str(payload.get("executive_summary_en") or ""),
+            "executive_summary_bn": clean_line(payload.get("executive_summary_bn") or ""),
+            "executive_summary_en": clean_line(payload.get("executive_summary_en") or ""),
             "fatalities": max(0, int(float(payload.get("fatalities", 0)))),
             "missing": max(0, int(float(payload.get("missing", 0)))),
             "rescued": max(0, int(float(payload.get("rescued", 0)))),
@@ -259,10 +285,10 @@ class IngestionOrchestrator:
             "estimated_loss_bdt": max(0.0, float(payload.get("estimated_loss_bdt", 0.0))),
             "affected_areas_count": max(0, int(float(payload.get("affected_areas_count", 0)))),
             "danger_level": danger,
-            "priority_actions_en": [str(v) for v in (payload.get("priority_actions_en") or [])][:3],
-            "priority_actions_bn": [str(v) for v in (payload.get("priority_actions_bn") or [])][:3],
-            "recovery_needs_en": [str(v) for v in (payload.get("recovery_needs_en") or [])][:4],
-            "recovery_needs_bn": [str(v) for v in (payload.get("recovery_needs_bn") or [])][:4],
+            "priority_actions_en": [clean_line(v) for v in (payload.get("priority_actions_en") or []) if clean_line(v)][:3],
+            "priority_actions_bn": [clean_line(v) for v in (payload.get("priority_actions_bn") or []) if clean_line(v)][:3],
+            "recovery_needs_en": [clean_line(v) for v in (payload.get("recovery_needs_en") or []) if clean_line(v)][:4],
+            "recovery_needs_bn": [clean_line(v) for v in (payload.get("recovery_needs_bn") or []) if clean_line(v)][:4],
         }
 
     def _build_fallback_impact_payload(

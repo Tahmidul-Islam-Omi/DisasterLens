@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { 
   Search, 
   Thermometer, 
@@ -25,15 +25,47 @@ type DistrictWeather = {
   riskLevel: 'high' | 'moderate' | 'low';
 };
 
-const mockChartData = [
-  { name: '00:00', value: 12 },
-  { name: '04:00', value: 18 },
-  { name: '08:00', value: 45 },
-  { name: '12:00', value: 85 },
-  { name: '16:00', value: 65 },
-  { name: '20:00', value: 40 },
-  { name: '23:59', value: 35 },
+const fallbackDistricts: DistrictWeather[] = [
+  {
+    id: 'DW-1',
+    district: 'Dhaka',
+    districtBn: 'ঢাকা',
+    division: 'Dhaka',
+    divisionBn: 'ঢাকা',
+    temperature: 32,
+    rainfall: 45,
+    windSpeed: 28,
+    riskLevel: 'moderate',
+  },
+  {
+    id: 'DW-2',
+    district: 'Sylhet',
+    districtBn: 'সিলেট',
+    division: 'Sylhet',
+    divisionBn: 'সিলেট',
+    temperature: 28,
+    rainfall: 120,
+    windSpeed: 35,
+    riskLevel: 'high',
+  },
+  {
+    id: 'DW-3',
+    district: 'Chittagong',
+    districtBn: 'চট্টগ্রাম',
+    division: 'Chittagong',
+    divisionBn: 'চট্টগ্রাম',
+    temperature: 30,
+    rainfall: 75,
+    windSpeed: 32,
+    riskLevel: 'high',
+  },
 ];
+
+const districtCoords: Record<string, [number, number]> = {
+  dhaka: [23.8103, 90.4125],
+  sylhet: [24.8949, 91.8687],
+  chittagong: [22.3569, 91.7832],
+};
 
 export function DistrictWeatherView() {
   const { t, d } = useLanguage();
@@ -45,16 +77,47 @@ export function DistrictWeatherView() {
 
   useEffect(() => {
     const loadData = async () => {
+      if (!token) {
+        setDistricts(fallbackDistricts);
+        setSelectedDistrict(fallbackDistricts[0]);
+        return;
+      }
       try {
         const data = await api.get<DistrictWeather[]>('/authority/district-weather', token);
         setDistricts(data);
         setSelectedDistrict(data[0] || null);
       } catch (error) {
         console.error('Failed to load district weather', error);
+        setDistricts(fallbackDistricts);
+        setSelectedDistrict(fallbackDistricts[0]);
       }
     };
     void loadData();
-  }, []);
+  }, [token]);
+
+  const rainfallChartData = useMemo(() => {
+    if (!selectedDistrict) {
+      return [];
+    }
+
+    const hourlyBase = Math.max(5, selectedDistrict.rainfall / 2.5);
+    return [
+      { name: '00:00', value: Math.round(hourlyBase * 0.35) },
+      { name: '04:00', value: Math.round(hourlyBase * 0.5) },
+      { name: '08:00', value: Math.round(hourlyBase * 0.8) },
+      { name: '12:00', value: Math.round(hourlyBase * 1.15) },
+      { name: '16:00', value: Math.round(hourlyBase * 0.95) },
+      { name: '20:00', value: Math.round(hourlyBase * 0.7) },
+      { name: '23:59', value: Math.round(hourlyBase * 0.55) },
+    ];
+  }, [selectedDistrict]);
+
+  const forecastCoords = useMemo<[number, number]>(() => {
+    if (!selectedDistrict) {
+      return [23.8103, 90.4125];
+    }
+    return districtCoords[selectedDistrict.district.trim().toLowerCase()] || [23.8103, 90.4125];
+  }, [selectedDistrict]);
 
   const filteredDistricts = districts.filter(district => 
     d(district.district, district.districtBn).toLowerCase().includes(searchQuery.toLowerCase())
@@ -198,7 +261,7 @@ export function DistrictWeatherView() {
           />
           <WeatherCard
             title={t('wind_speed')}
-            value="34"
+            value={selectedDistrict.windSpeed.toString()}
             unit="km/h"
             icon={Wind}
             trend={t('gusty_winds_detected')}
@@ -230,7 +293,7 @@ export function DistrictWeatherView() {
           </div>
           <div className="h-[300px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={mockChartData}>
+              <AreaChart data={rainfallChartData}>
                 <defs key="defs">
                   <linearGradient id="colorRain" x1="0" y1="0" x2="0" y2="1">
                     <stop key="stop1" offset="5%" stopColor="#1E3A8A" stopOpacity={0.1}/>
@@ -305,7 +368,11 @@ export function DistrictWeatherView() {
 
         {/* 7-Day Forecast for District */}
         <div className="mt-8">
-          <ForecastPanel />
+          <ForecastPanel
+            latitude={forecastCoords[0]}
+            longitude={forecastCoords[1]}
+            locationLabel={d(selectedDistrict.district, selectedDistrict.districtBn)}
+          />
         </div>
       </div>
     </div>

@@ -47,7 +47,7 @@ export const ROUTE_PERMISSIONS: Record<string, Role[]> = {
   // Admin-only routes
   '/geospatial-risk': ['Admin'],
   '/infrastructure-exposure': ['Admin'],
-  '/vulnerable-communities': ['Admin'],
+  '/vulnerable-communities': ['LocalAuthority', 'Admin'],
   '/risk-pipeline': ['Admin'],
   '/register-authority': ['Admin'],
   '/query': ['Admin'],

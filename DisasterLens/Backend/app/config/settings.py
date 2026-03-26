@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # Source ingestion toggles
     SOURCE_ENABLE_PROTHOM_ALO: bool = True
     SOURCE_ENABLE_DAILY_STAR: bool = False
+    SOURCE_ENABLE_SOURCES_TXT: bool = True
 
     # News crawling settings
     PROTHOM_ALO_ENVIRONMENT_URL: str = "https://www.prothomalo.com/bangladesh/environment/"
@@ -38,6 +39,8 @@ class Settings(BaseSettings):
     NEWS_MAX_ARTICLES_PER_RUN: int = 20
     SCRAPER_TIMEOUT_SECONDS: int = 30
     SCRAPER_USER_AGENT: str = "DisasterLensBot/1.0 (+https://example.com/contact)"
+    SOURCES_TXT_FILE: str = "sources.txt"
+    SOURCES_TXT_MAX_URLS: int = 12
 
     # AI summarization provider
     AI_SUMMARIZER_PROVIDER: str = "gemini"

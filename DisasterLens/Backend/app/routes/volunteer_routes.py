@@ -14,10 +14,15 @@ from app.utils.response import APIResponse, success_response
 router = APIRouter(prefix="/volunteer", tags=["Volunteer"])
 
 COVERAGE_COLLECTION = "volunteer_coverage_updates"
+INFRA_EXPOSURE_COLLECTION = "infra_exposure_reports"
 
 
 def _coverage_col():
     return get_database()[COVERAGE_COLLECTION]
+
+
+def _infra_col():
+    return get_database()[INFRA_EXPOSURE_COLLECTION]
 
 
 @router.post("/coverage-updates", response_model=APIResponse, summary="Create volunteer coverage update")
@@ -95,6 +100,46 @@ async def get_volunteer_dashboard(_: dict[str, Any] = Depends(require_roles("Vol
 async def get_volunteer_tasks(_: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin"))) -> APIResponse:
     tasks = await get_database()["tasks"].find().to_list(length=None)
     return success_response("Volunteer tasks", [_serialize(task) for task in tasks])
+
+
+@router.post("/infra-exposures", response_model=APIResponse, summary="Log infrastructure exposure")
+async def log_infrastructure_exposure(
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin")),
+) -> APIResponse:
+    now = datetime.utcnow()
+    lat = float(payload.get("lat", 0) or 0)
+    lng = float(payload.get("lng", 0) or 0)
+
+    doc = {
+        "_id": f"IER-{now.strftime('%Y%m%d%H%M%S')}-{randint(100, 999)}",
+        "name": str(payload.get("name", "Unnamed Infrastructure")).strip() or "Unnamed Infrastructure",
+        "type": str(payload.get("type", "Other")).strip() or "Other",
+        "location": str(payload.get("location", "")).strip(),
+        "hazard": str(payload.get("hazard", "Flood")).strip() or "Flood",
+        "severity": str(payload.get("severity", "Medium")).strip() or "Medium",
+        "status": str(payload.get("status", "Compromised")).strip() or "Compromised",
+        "population": str(payload.get("population", "N/A")).strip() or "N/A",
+        "lat": lat,
+        "lng": lng,
+        "notes": str(payload.get("notes", "")).strip(),
+        "reported_by": str(current_user.get("_id", "")),
+        "reported_role": str(current_user.get("role", "")),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    await _infra_col().insert_one(doc)
+    return success_response("Infrastructure exposure logged", _serialize(doc))
+
+
+@router.get("/infra-exposures/latest", response_model=APIResponse, summary="Latest infrastructure exposure logs")
+async def get_latest_infra_exposures(
+    limit: int = Query(default=200, ge=1, le=500),
+    _: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin")),
+) -> APIResponse:
+    rows = await _infra_col().find().sort("created_at", -1).limit(limit).to_list(length=limit)
+    return success_response("Latest infrastructure exposure logs", [_serialize(row) for row in rows])
 
 
 def _serialize(value: Any) -> Any:

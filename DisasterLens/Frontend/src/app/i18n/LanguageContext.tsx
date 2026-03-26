@@ -10,6 +10,8 @@ interface LanguageContextType {
   t: (key: string, params?: Record<string, string | number>) => string;
   /** Display a dynamic data value in the current language. */
   d: (en: string, bn: string) => string;
+  /** Convert English numerals to Bangla numerals when language is Bangla. */
+  bnenconvert: (value: string | number) => string;
 }
 
 const LanguageContext = createContext<LanguageContextType>({
@@ -17,10 +19,21 @@ const LanguageContext = createContext<LanguageContextType>({
   toggleLanguage: () => {},
   t: (key) => key,
   d: (en) => en,
+  bnenconvert: (value) => String(value),
 });
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [lang, setLang] = useState<Language>("en");
+
+  const bnenconvert = (value: string | number): string => {
+    const text = String(value);
+    if (lang !== 'bn') {
+      return text;
+    }
+
+    const bnDigits = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+    return text.replace(/\d/g, (digit) => bnDigits[Number(digit)]);
+  };
 
   const toggleLanguage = () => setLang((prev) => (prev === "en" ? "bn" : "en"));
 
@@ -29,16 +42,16 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     let text = translationObj[key] ?? key;
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
-        text = text.replace(`{{${k}}}`, String(v));
+        text = text.replace(`{{${k}}}`, bnenconvert(v));
       });
     }
     return text;
   };
 
-  const d = (en: string, bn: string) => (lang === "en" ? en : bn);
+  const d = (en: string, bn: string) => (lang === "en" ? bnenconvert(en) : bnenconvert(bn));
 
   return (
-    <LanguageContext.Provider value={{ lang, toggleLanguage, t, d }}>
+    <LanguageContext.Provider value={{ lang, toggleLanguage, t, d, bnenconvert }}>
       {children}
     </LanguageContext.Provider>
   );

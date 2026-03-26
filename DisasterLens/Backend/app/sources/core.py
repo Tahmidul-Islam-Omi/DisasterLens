@@ -5,8 +5,9 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -78,6 +79,10 @@ DISASTER_KEYWORDS = {
     "river erosion",
     "drought",
     "earthquake",
+    "water level",
+    "forecast",
+    "hazard",
+    "warning",
     "ঘূর্ণিঝড়",
     "বন্যা",
     "পাহাড়ধস",
@@ -397,10 +402,149 @@ class DailyStarAdapter(SourceAdapter):
         return []
 
 
+class SourcesTxtAdapter(SourceAdapter):
+    """Generic crawler for URLs listed in Backend/sources.txt."""
+
+    @property
+    def source_key(self) -> str:
+        return "sources_txt"
+
+    def is_enabled(self) -> bool:
+        return settings.SOURCE_ENABLE_SOURCES_TXT
+
+    async def collect_articles(self, client: httpx.AsyncClient) -> list[SourceArticle]:
+        urls = self._load_urls_from_sources_txt()[: settings.SOURCES_TXT_MAX_URLS]
+        if not urls:
+            return []
+
+        # Keep this adapter focused on official feeds listed in sources.txt.
+        unique_targets = self._unique(urls)
+
+        articles: list[SourceArticle] = []
+        for url in unique_targets:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+
+                title = self._title_from_url(url)
+                clean_text = ""
+                if "json" in content_type or "application/json" in content_type:
+                    try:
+                        payload = response.json()
+                        clean_text = normalize_whitespace(json.dumps(payload, ensure_ascii=False)[:20000])
+                    except Exception:  # noqa: BLE001
+                        clean_text = normalize_whitespace(response.text[:20000])
+                elif "text/html" in content_type or "application/xhtml+xml" in content_type:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    for tag in soup(["script", "style", "noscript", "svg", "nav", "footer", "header", "aside", "form"]):
+                        tag.decompose()
+
+                    h1 = soup.find("h1")
+                    if h1:
+                        title = normalize_whitespace(h1.get_text(" ", strip=True))
+                    elif soup.title:
+                        title = normalize_whitespace(soup.title.get_text(" ", strip=True))
+
+                    paragraph_nodes = soup.find_all("p")
+                    paragraphs = [normalize_whitespace(node.get_text(" ", strip=True)) for node in paragraph_nodes]
+                    paragraphs = [p for p in paragraphs if len(p) > 20]
+                    clean_text = normalize_whitespace("\n".join(paragraphs))
+                    if not clean_text:
+                        clean_text = normalize_whitespace(soup.get_text(" ", strip=True))
+                else:
+                    clean_text = normalize_whitespace(response.text[:16000])
+
+                if not title or not clean_text:
+                    continue
+                if not is_disaster_related(title, clean_text):
+                    continue
+
+                language = infer_language(f"{title} {clean_text}")
+                tags = self._extract_tags(title, clean_text, url)
+                articles.append(
+                    SourceArticle(
+                        source=self.source_key,
+                        url=url,
+                        title=title,
+                        published_at=None,
+                        clean_text=clean_text[:16000],
+                        language=language,
+                        tags=tags,
+                        metadata={"seed": "sources.txt"},
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sources.txt article parse failed url=%s err=%s", url, exc)
+
+        logger.info("SourcesTxt collected=%d", len(articles))
+        return articles
+
+    @staticmethod
+    def _extract_tags(title: str, text: str, url: str) -> list[str]:
+        corpus = f"{title} {text} {url}".lower()
+        vocabulary = {
+            "flood": ["flood", "flash flood", "বন্যা"],
+            "cyclone": ["cyclone", "ঘূর্ণিঝড়", "ঝড়"],
+            "rainfall": ["rain", "rainfall", "বৃষ্টি"],
+            "water_level": ["water-level", "water level", "river level", "স্তর"],
+            "landslide": ["landslide", "পাহাড়ধস"],
+            "evacuation": ["evacuation", "rescue", "উদ্ধার"],
+        }
+        tags: list[str] = []
+        for tag, words in vocabulary.items():
+            if any(word in corpus for word in words):
+                tags.append(tag)
+        return tags
+
+    @staticmethod
+    def _load_urls_from_sources_txt() -> list[str]:
+        path = Path(settings.SOURCES_TXT_FILE)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        if not path.exists():
+            logger.warning("sources.txt not found path=%s", path)
+            return []
+
+        urls: list[str] = []
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            line = line.split("=>", 1)[0].strip()
+            if not line.startswith("http"):
+                continue
+            if "prothomalo.com" in line:
+                continue
+            if "github.com" in line and "/tree/" in line:
+                continue
+            urls.append(line)
+        return urls
+
+    @staticmethod
+    def _title_from_url(url: str) -> str:
+        parsed = urlparse(url)
+        tail = parsed.path.strip("/").split("/")[-1] if parsed.path else parsed.netloc
+        title = tail.replace("-", " ").replace("_", " ").strip() or parsed.netloc
+        return normalize_whitespace(title.title())
+
+    @staticmethod
+    def _unique(urls: list[str]) -> list[str]:
+        seen: set[str] = set()
+        unique_urls: list[str] = []
+        for url in urls:
+            if url in seen:
+                continue
+            seen.add(url)
+            unique_urls.append(url)
+        return unique_urls
+
+
 def get_all_sources() -> list[SourceAdapter]:
     return [
         ProthomAloAdapter(),
         DailyStarAdapter(),
+        SourcesTxtAdapter(),
     ]
 
 

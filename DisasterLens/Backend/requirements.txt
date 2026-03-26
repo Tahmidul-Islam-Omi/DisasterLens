@@ -10,3 +10,4 @@ langchain-google-genai
 python-jose[cryptography]
 passlib[bcrypt]
 bcrypt
+deep-translator==1.11.4

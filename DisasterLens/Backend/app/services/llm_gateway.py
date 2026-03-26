@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -71,11 +72,12 @@ class GeminiLangChainGateway:
 
         prompt_language = "Bangla" if language == "bn" else "English"
         prompt = (
-            "You are a disaster intelligence analyst. "
-            "Write 2-3 complete operational sentences with impacts and urgency. "
-            f"Respond in {prompt_language}.\n\n"
+            "You are a disaster intelligence analyst for Bangladesh. "
+            "Write exactly 4 or 5 operational sentences covering: what happened, where, and immediate implications. "
+            "Do not include preambles, labels, bullet points, or meta phrases like 'here are'. "
+            f"Respond only in {prompt_language}.\n\n"
             f"Title: {title}\n"
-            f"Body: {text[:8000]}"
+            f"Body: {text[:3000]}"
         )
 
         try:
@@ -84,7 +86,7 @@ class GeminiLangChainGateway:
             content = getattr(result, "content", "")
             if isinstance(content, list):
                 content = " ".join(str(part) for part in content)
-            output = str(content).strip()
+            output = self._clean_model_text(str(content))
             return output or None
         except Exception as exc:  # noqa: BLE001
             logger.warning("LangChain Gemini summarize failed err=%s", exc)
@@ -102,11 +104,13 @@ class GeminiLangChainGateway:
         prompt = (
             "You are a disaster impact analysis engine for Bangladesh.\n"
             "Create updated analytics from latest news and previous stats.\n"
+            "Use only evidence from LATEST_NEWS and avoid generic filler.\n"
             "Constraints:\n"
             "- danger_level must be one of: info, warning, high, critical\n"
-            "- executive_summary_bn and executive_summary_en must each be 2 complete sentences\n"
+            "- executive_summary_bn and executive_summary_en must each be 4-5 complete sentences\n"
             "- priority_actions_en and priority_actions_bn must each have exactly 3 short items\n"
             "- recovery_needs_en and recovery_needs_bn must each have 2-4 short items\n"
+            "- summaries must not include preambles like 'Here are 2-3 sentences'\n"
             "- numeric fields must be numbers\n\n"
             f"PREVIOUS_STATS: {previous_stats}\n"
             f"LATEST_NEWS: {compact_news}"
@@ -117,13 +121,60 @@ class GeminiLangChainGateway:
             structured_llm = llm.with_structured_output(ImpactAnalysisOutput)
             result = await structured_llm.ainvoke(prompt)
             if isinstance(result, ImpactAnalysisOutput):
-                return result.model_dump()
+                return self._clean_impact_payload(result.model_dump())
             if isinstance(result, dict):
-                return result
+                return self._clean_impact_payload(result)
             return None
         except Exception as exc:  # noqa: BLE001
             logger.warning("LangChain Gemini impact analysis failed err=%s", exc)
             return None
+
+    @staticmethod
+    def _clean_model_text(text: str) -> str:
+        value = (text or "").strip()
+        if not value:
+            return ""
+
+        value = re.sub(r"^```[a-zA-Z]*\s*", "", value)
+        value = re.sub(r"\s*```$", "", value)
+        value = re.sub(r"\s+", " ", value).strip()
+
+        meta_prefixes = [
+            "here are",
+            "here is",
+            "below are",
+            "summary:",
+            "executive summary:",
+            "এখানে",
+            "নিচে",
+        ]
+        lower = value.lower()
+        for prefix in meta_prefixes:
+            if lower.startswith(prefix):
+                parts = re.split(r"[:.-]\s*", value, maxsplit=1)
+                if len(parts) == 2:
+                    value = parts[1].strip()
+                break
+        return value
+
+    def _clean_impact_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cleaned = dict(payload)
+        for key in ["executive_summary_bn", "executive_summary_en"]:
+            cleaned[key] = self._clean_model_text(str(cleaned.get(key) or ""))
+
+        for key in ["priority_actions_en", "priority_actions_bn", "recovery_needs_en", "recovery_needs_bn"]:
+            raw = cleaned.get(key) or []
+            if not isinstance(raw, list):
+                raw = [raw]
+            items = []
+            for item in raw:
+                value = self._clean_model_text(str(item))
+                value = re.sub(r"^[\-\*\d\.)\s]+", "", value).strip()
+                if value:
+                    items.append(value)
+            cleaned[key] = items
+
+        return cleaned
 
 
 gemini_gateway = GeminiLangChainGateway()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, Query, status
 
@@ -287,6 +288,250 @@ async def simplify_alert_message(payload: dict[str, Any], _: dict[str, Any] = De
         "messageBn": payload.get("messageBn", simplified),
     }
     return success_response("Simplified alert message", data)
+
+
+@router.get("/infra-exposures", response_model=APIResponse)
+async def list_infra_exposures(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    rows = await get_database()["infra_exposure_reports"].find().sort("created_at", -1).to_list(length=None)
+    return success_response("Infrastructure exposure logs", [_serialize(row) for row in rows])
+
+
+@router.get("/geospatial-risk", response_model=APIResponse)
+async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    db = get_database()
+    exposures = await db["infra_exposure_reports"].find().sort("created_at", -1).to_list(length=None)
+    vulnerable_rows = await db["vulnerable_communities"].find().sort("created_at", -1).to_list(length=None)
+    processed_news = await db["news_articles_processed"].find({"source_name": "sources_txt"}).sort("processed_at", -1).limit(50).to_list(length=50)
+    latest_snapshot = await db["impact_summary_snapshots"].find_one(sort=[("snapshot_at", -1)])
+
+    district_coords: dict[str, tuple[float, float]] = {
+        "dhaka": (23.8103, 90.4125),
+        "sylhet": (24.8949, 91.8687),
+        "sunamganj": (25.0658, 91.3950),
+        "habiganj": (24.3745, 91.4155),
+        "moulvibazar": (24.4829, 91.7774),
+        "netrokona": (24.8835, 90.7279),
+        "chattogram": (22.3569, 91.7832),
+        "chittagong": (22.3569, 91.7832),
+        "barishal": (22.7010, 90.3535),
+        "khulna": (22.8456, 89.5403),
+        "rajshahi": (24.3636, 88.6241),
+        "rangpur": (25.7439, 89.2752),
+        "mymensingh": (24.7471, 90.4203),
+        "cox's bazar": (21.4272, 92.0058),
+        "coxs bazar": (21.4272, 92.0058),
+    }
+
+    exposed_infra = len(exposures)
+    high_risk_areas = len([row for row in exposures if str(row.get("severity", "")).lower() == "high"])
+    affected_pop = 0
+    for row in exposures:
+        population_text = str(row.get("population", "0"))
+        digits = "".join(ch for ch in population_text if ch.isdigit())
+        if digits:
+            affected_pop += int(digits)
+
+    damaged_roads = len([row for row in exposures if str(row.get("type", "")).lower() in {"road", "bridge"}])
+    shelter_items = [row for row in exposures if str(row.get("type", "")).lower() == "shelter"]
+    operational_shelters = len([row for row in shelter_items if str(row.get("status", "")).lower() == "operational"])
+    shelter_capacity = int((operational_shelters / max(1, len(shelter_items))) * 100)
+
+    points = []
+    for row in exposures:
+        lat = row.get("lat")
+        lng = row.get("lng")
+        if lat is None or lng is None:
+            continue
+        points.append(
+            {
+                "id": str(row.get("_id")),
+                "name": row.get("name", "Infrastructure"),
+                "type": row.get("type", "Other"),
+                "hazard": row.get("hazard", "Flood"),
+                "severity": row.get("severity", "Medium"),
+                "status": row.get("status", "Compromised"),
+                "population": row.get("population", "N/A"),
+                "lat": float(lat),
+                "lng": float(lng),
+            }
+        )
+
+    for row in vulnerable_rows:
+        lat = row.get("lat")
+        lng = row.get("lng")
+        if lat is None or lng is None:
+            district_name = str(row.get("district", "")).strip().lower()
+            coords = district_coords.get(district_name)
+            if coords is None:
+                continue
+            lat, lng = coords
+
+        hazards = row.get("hazardExposure") or []
+        hazard = hazards[0] if isinstance(hazards, list) and hazards else "Flood"
+
+        points.append(
+            {
+                "id": str(row.get("_id")),
+                "name": row.get("name", "Vulnerable Community"),
+                "type": "Community",
+                "hazard": hazard,
+                "severity": row.get("riskLevel", "High"),
+                "status": "At Risk",
+                "population": row.get("population", "N/A"),
+                "lat": float(lat),
+                "lng": float(lng),
+            }
+        )
+
+    if not points:
+        area_mentions: dict[str, dict[str, Any]] = {}
+        for item in processed_news:
+            title = str(item.get("title", ""))
+            summary = str(item.get("llm_summary_en", ""))
+            summary_bn = str(item.get("llm_summary_bn", ""))
+            corpus = f"{title} {summary} {summary_bn}".lower()
+            hazard_tags = item.get("hazard_tags") or []
+            hazard = hazard_tags[0] if isinstance(hazard_tags, list) and hazard_tags else "Flood"
+
+            for district, coords in district_coords.items():
+                if district not in corpus:
+                    continue
+                current = area_mentions.get(district)
+                if current is None:
+                    area_mentions[district] = {
+                        "score": 1,
+                        "hazard": hazard,
+                        "coords": coords,
+                    }
+                else:
+                    current["score"] += 1
+
+        sorted_mentions = sorted(area_mentions.items(), key=lambda kv: kv[1]["score"], reverse=True)
+        for district, payload in sorted_mentions[:10]:
+            score = int(payload["score"])
+            severity = "High" if score >= 3 else "Medium"
+            lat, lng = payload["coords"]
+            points.append(
+                {
+                    "id": f"news-{district}",
+                    "name": district.title(),
+                    "type": "News-derived hotspot",
+                    "hazard": payload["hazard"],
+                    "severity": severity,
+                    "status": "Monitoring",
+                    "population": "N/A",
+                    "lat": float(lat),
+                    "lng": float(lng),
+                }
+            )
+
+        # If official feed text has no district names, still publish source-based geospatial points.
+        if not points:
+            source_defaults: dict[str, tuple[float, float]] = {
+                "ffwc.bwdb.gov.bd": (23.8103, 90.4125),
+                "ffwc.gov.bd": (23.8103, 90.4125),
+                "live8.bmd.gov.bd": (23.8103, 90.4125),
+                "mobile.bmd.gov.bd": (23.8103, 90.4125),
+                "unosat-geodrr.cern.ch": (23.6850, 90.3563),
+                "data.humdata.org": (23.6850, 90.3563),
+            }
+
+            for idx, item in enumerate(processed_news[:10]):
+                source_url = str(item.get("source_url", "")).strip()
+                parsed = urlparse(source_url)
+                netloc = parsed.netloc.lower()
+
+                lat_lng = None
+                if "api.met.no" in netloc:
+                    query = parse_qs(parsed.query)
+                    lat_values = query.get("lat") or []
+                    lon_values = query.get("lon") or []
+                    if lat_values and lon_values:
+                        try:
+                            lat_lng = (float(lat_values[0]), float(lon_values[0]))
+                        except Exception:  # noqa: BLE001
+                            lat_lng = None
+
+                if lat_lng is None:
+                    lat_lng = source_defaults.get(netloc, (23.8103, 90.4125))
+
+                hazard_tags = item.get("hazard_tags") or []
+                hazard = hazard_tags[0] if isinstance(hazard_tags, list) and hazard_tags else "flood"
+                severity = "High" if hazard in {"flood", "cyclone", "landslide", "water_level"} else "Medium"
+
+                points.append(
+                    {
+                        "id": f"official-{idx}-{netloc or 'source'}",
+                        "name": item.get("title") or "Official Hazard Feed",
+                        "type": "Official feed alert",
+                        "hazard": hazard,
+                        "severity": severity,
+                        "status": "Monitoring",
+                        "population": "N/A",
+                        "lat": float(lat_lng[0]),
+                        "lng": float(lat_lng[1]),
+                    }
+                )
+
+    data = {
+        "metrics": {
+            "exposedInfra": max(exposed_infra, len(points)),
+            "highRiskAreas": max(high_risk_areas, len([row for row in points if str(row.get("severity", "")).lower() in {"high", "critical"}])),
+            "affectedPopulation": affected_pop,
+            "damagedRoads": damaged_roads,
+            "shelterCapacity": shelter_capacity,
+            "dangerLevel": (latest_snapshot or {}).get("danger_level", "warning"),
+        },
+        "points": points,
+        "priorityAreas": points[:8],
+    }
+    return success_response("Geospatial risk payload", _serialize(data))
+
+
+@router.get("/vulnerable-communities", response_model=APIResponse)
+async def list_vulnerable_communities(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    rows = await get_database()["vulnerable_communities"].find().sort("created_at", -1).to_list(length=None)
+    return success_response("Vulnerable communities", [_serialize(row) for row in rows])
+
+
+@router.post("/vulnerable-communities", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
+async def create_vulnerable_community(
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin")),
+) -> APIResponse:
+    now = datetime.now(timezone.utc)
+
+    population_text = str(payload.get("population", "0")).strip() or "0"
+    digits = "".join(ch for ch in population_text if ch.isdigit())
+    population_value = int(digits) if digits else 0
+
+    hazards = payload.get("hazardExposure") or payload.get("hazard_exposure") or []
+    if not isinstance(hazards, list):
+        hazards = []
+
+    risk_level = str(payload.get("riskLevel", "High")).strip() or "High"
+
+    doc = {
+        "_id": f"VC-{uuid4().hex[:10].upper()}",
+        "name": str(payload.get("name", "")).strip(),
+        "district": str(payload.get("district", "")).strip(),
+        "population": str(population_value),
+        "priorityScore": int(payload.get("priorityScore", 0) or 0),
+        "riskLevel": risk_level,
+        "shelterAccess": str(payload.get("shelterAccess", "Moderate")).strip() or "Moderate",
+        "roadAccessibility": str(payload.get("roadAccessibility", "At Risk")).strip() or "At Risk",
+        "hazardExposure": [str(item).strip() for item in hazards if str(item).strip()],
+        "lat": float(payload.get("lat", 0) or 0),
+        "lng": float(payload.get("lng", 0) or 0),
+        "notes": str(payload.get("notes", "")).strip(),
+        "created_by": str(current_user.get("_id", "")),
+        "created_role": str(current_user.get("role", "")),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    await get_database()["vulnerable_communities"].insert_one(doc)
+    return success_response("Vulnerable community added", _serialize(doc))
 
 
 def _serialize(value: Any) -> Any:

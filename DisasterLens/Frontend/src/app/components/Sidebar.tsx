@@ -29,6 +29,7 @@ export function Sidebar() {
   const { t } = useLanguage();
 
   const getAdminMenu = () => [
+    { name: t('weather_dashboard'), icon: CloudSun, path: '/' },
     { name: t('geospatial_risk'), icon: Map, path: '/geospatial-risk' },
     { name: t('infra_exposure'), icon: Building2, path: '/infrastructure-exposure' },
     { name: t('vulnerable_comms'), icon: MapPin, path: '/vulnerable-communities' },
@@ -41,7 +42,9 @@ export function Sidebar() {
   ];
 
   const getLocalAuthorityMenu = () => [
+    { name: t('weather_dashboard'), icon: CloudSun, path: '/' },
     { name: t('dashboard'), icon: LayoutDashboard, path: '/local-authority-dashboard' },
+    { name: t('vulnerable_comms'), icon: MapPin, path: '/vulnerable-communities' },
     { name: t('volunteer_coverage'), icon: Users, path: '/volunteer-coverage' },
     { name: t('volunteer_management'), icon: UserPlus, path: '/volunteer-management' },
     { name: t('task_management'), icon: ClipboardList, path: '/task-management' },
