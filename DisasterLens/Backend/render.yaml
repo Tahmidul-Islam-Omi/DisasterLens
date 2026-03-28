@@ -1,0 +1,71 @@
+services:
+  - type: web
+    name: disasterlens-backend
+    runtime: python
+    region: singapore
+    plan: free
+    branch: main
+    rootDir: DisasterLens/Backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_NAME
+        value: DisasterLens API
+      - key: APP_VERSION
+        value: 1.0.0
+      - key: DEBUG
+        value: false
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: disasterlens
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 60
+      - key: SOURCE_ENABLE_PROTHOM_ALO
+        value: true
+      - key: SOURCE_ENABLE_DAILY_STAR
+        value: false
+      - key: PROTHOM_ALO_ENVIRONMENT_URL
+        value: https://www.prothomalo.com/bangladesh/environment/
+      - key: PROTHOM_ALO_MAX_LISTING_PAGES
+        value: 5
+      - key: NEWS_MAX_ARTICLES_PER_RUN
+        value: 20
+      - key: SCRAPER_TIMEOUT_SECONDS
+        value: 20
+      - key: SCRAPER_USER_AGENT
+        value: DisasterLensBot/1.0
+      - key: AI_SUMMARIZER_PROVIDER
+        value: gemini
+      - key: AI_SUMMARIZER_FALLBACKS
+        value: mistral,qwen
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+      - key: GEMINI_TIMEOUT_SECONDS
+        value: 30
+      - key: BANGLA_GEO_DIVISIONS_URL
+        value: https://raw.githubusercontent.com/m3h3d1ha2an/banglageoapi/main/src/json/divisions.json
+      - key: BANGLA_GEO_DISTRICTS_URL
+        value: https://raw.githubusercontent.com/m3h3d1ha2an/banglageoapi/main/src/json/districts.json
+      - key: BANGLA_GEO_UPAZILAS_URL
+        value: https://raw.githubusercontent.com/m3h3d1ha2an/banglageoapi/main/src/json/upazilas.json
+      - key: BANGLA_GEO_UNIONS_URL
+        value: https://raw.githubusercontent.com/m3h3d1ha2an/banglageoapi/main/src/json/unions.json
+      - key: GEO_DATA_FILE
+        value: app/utils/geo_data.json
+      - key: GEO_FETCH_REMOTE_ON_MISS
+        value: false
+      - key: ENABLE_INGESTION_WORKER
+        value: true
+      - key: INGESTION_WORKER_INTERVAL_SECONDS
+        value: 3600
