@@ -47,14 +47,15 @@ export function WeatherAlertsView() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const data = await api.get<typeof alerts>('/authority/weather-alerts', token);
+        const path = token ? '/authority/weather-alerts' : '/public/weather-alerts';
+        const data = await api.get<typeof alerts>(path, token);
         setAlerts(data);
       } catch (error) {
         console.error('Failed to load weather alerts', error);
       }
     };
     void loadData();
-  }, []);
+  }, [token]);
 
   const filteredAlerts = alerts.filter((alert) => alert.publishedDate === selectedDate);
 

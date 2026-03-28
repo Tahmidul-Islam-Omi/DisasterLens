@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 from urllib.parse import parse_qs, urlparse
+import json
+import ssl
+import urllib.error
+import urllib.request
 
 from fastapi import APIRouter, Depends, Query, status
 
@@ -12,6 +16,7 @@ from app.security import require_roles
 from app.utils.response import APIResponse, success_response
 
 router = APIRouter(prefix="/authority", tags=["LocalAuthority"])
+FFWC_STATIONS_URL = "https://ffwc.bwdb.gov.bd/data_load/stations/"
 
 
 @router.get("/dashboard/overview", response_model=APIResponse)
@@ -296,12 +301,259 @@ async def list_infra_exposures(_: dict[str, Any] = Depends(require_roles("LocalA
     return success_response("Infrastructure exposure logs", [_serialize(row) for row in rows])
 
 
+def _clean_ffwc_value(value: Any) -> Any:
+    if value in ("-", "#N/A", ""):
+        return None
+    return value
+
+
+def _parse_ffwc_float(value: Any) -> float | None:
+    cleaned = _clean_ffwc_value(value)
+    if cleaned is None:
+        return None
+    try:
+        return float(cleaned)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_ffwc_stations() -> list[dict[str, Any]]:
+    request = urllib.request.Request(FFWC_STATIONS_URL, headers={"User-Agent": "Mozilla/5.0"})
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        reason_text = str(getattr(exc, "reason", ""))
+        if "CERTIFICATE_VERIFY_FAILED" not in reason_text and "hostname" not in reason_text.lower():
+            raise
+
+        insecure_context = ssl._create_unverified_context()
+        with urllib.request.urlopen(request, timeout=30, context=insecure_context) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+def _normalize_score(value: float | None, min_value: float | None, max_value: float | None) -> float | None:
+    if value is None or min_value is None or max_value is None:
+        return None
+    if max_value == min_value:
+        return 1.0
+    return (value - min_value) / (max_value - min_value)
+
+
+def _summarize_ffwc_metric(stations: list[dict[str, Any]], metric: str) -> dict[str, Any]:
+    values = [row[metric] for row in stations if isinstance(row.get(metric), float)]
+    null_count = sum(1 for row in stations if row.get(metric) is None)
+    zero_count = sum(1 for row in stations if row.get(metric) == 0.0)
+
+    if not values:
+        return {
+            "count": len(stations),
+            "valid_count": 0,
+            "null_count": null_count,
+            "zero_count": zero_count,
+            "average": None,
+            "min": None,
+            "max": None,
+        }
+
+    return {
+        "count": len(stations),
+        "valid_count": len(values),
+        "null_count": null_count,
+        "zero_count": zero_count,
+        "average": round(sum(values) / len(values), 4),
+        "min": min(values),
+        "max": max(values),
+    }
+
+
+def _is_low_valid_pmdl(pmdl: float | None, pmdl_summary: dict[str, Any]) -> bool:
+    if pmdl is None or pmdl == 0.0:
+        return False
+
+    avg = pmdl_summary.get("average")
+    min_value = pmdl_summary.get("min")
+    if avg is None or min_value is None:
+        return False
+
+    # Lower-side pmdl is the lower half between min and average.
+    low_threshold = min_value + (avg - min_value) / 2
+    return pmdl <= low_threshold
+
+
+def _is_pmdl_rhwl_close(pmdl: float | None, rhwl: float | None, rhwl_summary: dict[str, Any]) -> bool:
+    if pmdl is None or pmdl == 0.0 or rhwl is None:
+        return False
+
+    rhwl_min = rhwl_summary.get("min")
+    rhwl_max = rhwl_summary.get("max")
+    if rhwl_min is None or rhwl_max is None:
+        return False
+
+    rhwl_range = max(0.0, rhwl_max - rhwl_min)
+    tolerance = max(0.5, rhwl_range * 0.1)
+    return abs(rhwl - pmdl) <= tolerance
+
+
+def _is_danger_rhwl_close(danger_level: float | None, rhwl: float | None) -> bool:
+    if danger_level is None or rhwl is None:
+        return False
+    return abs(danger_level - rhwl) < 1.0
+
+
+def _impact_from_score(score: float | None) -> str:
+    if score is None:
+        return "Low"
+    if score >= 0.67:
+        return "High"
+    if score >= 0.34:
+        return "Medium"
+    return "Low"
+
+
+def _rhwl_recency_score(date_text: str | None) -> float | None:
+    if not date_text:
+        return None
+    try:
+        observed = datetime.strptime(date_text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+    age_days = max(0, (datetime.now(timezone.utc) - observed).days)
+    # Recent RHWL date should have strong influence, decaying over ~10 years.
+    return round(max(0.0, 1.0 - (age_days / 3650.0)), 4)
+
+
+def _is_recent_rhwl_within_5_years(date_text: str | None) -> bool:
+    if not date_text:
+        return False
+    try:
+        observed = datetime.strptime(date_text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    age_days = max(0, (datetime.now(timezone.utc) - observed).days)
+    return age_days <= (5 * 365)
+
+
+def _ffwc_points_and_summary() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    rows = _fetch_ffwc_stations()
+    filtered = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lat = _parse_ffwc_float(row.get("lat"))
+        lng = _parse_ffwc_float(row.get("long"))
+        if lat is None or lng is None:
+            continue
+
+        filtered.append(
+            {
+                "id": row.get("id"),
+                "name": _clean_ffwc_value(row.get("name")),
+                "river": _clean_ffwc_value(row.get("river")),
+                "basin": _clean_ffwc_value(row.get("basin")),
+                "lat": lat,
+                "long": lng,
+                "danger_level": _parse_ffwc_float(row.get("dangerlevel")),
+                "rhwl": _parse_ffwc_float(row.get("rhwl")),
+                "pmdl": _parse_ffwc_float(row.get("pmdl")),
+                "division": _clean_ffwc_value(row.get("division")),
+                "district": _clean_ffwc_value(row.get("district")),
+                "upazilla": _clean_ffwc_value(row.get("upazilla")),
+                "union": _clean_ffwc_value(row.get("union")),
+                "date_of_rhwl": _clean_ffwc_value(row.get("date_of_rhwl")),
+            }
+        )
+
+    if not filtered:
+        return [], None
+
+    metric_summary = {
+        "danger_level": _summarize_ffwc_metric(filtered, "danger_level"),
+        "rhwl": _summarize_ffwc_metric(filtered, "rhwl"),
+        "pmdl": _summarize_ffwc_metric(filtered, "pmdl"),
+    }
+
+    danger_min = metric_summary["danger_level"]["min"]
+    danger_max = metric_summary["danger_level"]["max"]
+    rhwl_min = metric_summary["rhwl"]["min"]
+    rhwl_max = metric_summary["rhwl"]["max"]
+    pmdl_min = metric_summary["pmdl"]["min"]
+    pmdl_max = metric_summary["pmdl"]["max"]
+
+    points = []
+    for station in filtered:
+        danger_component = _normalize_score(station.get("danger_level"), danger_min, danger_max)
+        rhwl_component = _normalize_score(station.get("rhwl"), rhwl_min, rhwl_max)
+        pmdl_component = _normalize_score(station.get("pmdl"), pmdl_min, pmdl_max)
+        recency_component = _rhwl_recency_score(station.get("date_of_rhwl"))
+
+        weighted_parts = [
+            (danger_component, 0.45),
+            (rhwl_component, 0.2),
+            (pmdl_component, 0.1),
+            (recency_component, 0.25),
+        ]
+        total_weight = sum(weight for value, weight in weighted_parts if value is not None)
+        weighted_sum = sum((value or 0.0) * weight for value, weight in weighted_parts if value is not None)
+        score = round(weighted_sum / total_weight, 4) if total_weight > 0 else None
+
+        if score is not None and danger_component is not None and danger_component >= 0.8:
+            score = min(1.0, round(score + 0.12, 4))
+
+        # Explicit recency uplift: RHWL in last 5 years increases impact level.
+        if score is not None and _is_recent_rhwl_within_5_years(station.get("date_of_rhwl")):
+            score = min(1.0, round(score + 0.15, 4))
+
+        # Heavy boost when danger level and RHWL are very close.
+        if score is not None and _is_danger_rhwl_close(station.get("danger_level"), station.get("rhwl")):
+            score = min(1.0, round(score + 0.2, 4))
+
+        impact = _impact_from_score(score)
+        if _is_low_valid_pmdl(station.get("pmdl"), metric_summary["pmdl"]) or _is_pmdl_rhwl_close(
+            station.get("pmdl"),
+            station.get("rhwl"),
+            metric_summary["rhwl"],
+        ):
+            if impact == "Low":
+                impact = "High"
+
+        points.append(
+            {
+                "id": f"ffwc-{station.get('id')}",
+                "name": station.get("name") or "Station",
+                "type": "Station",
+                "hazard": "Flood",
+                "severity": impact,
+                "status": "Monitoring",
+                "population": "N/A",
+                "lat": station.get("lat"),
+                "lng": station.get("long"),
+                "impactScore": score,
+                "river": station.get("river"),
+                "basin": station.get("basin"),
+                "dangerLevel": station.get("danger_level"),
+                "rhwl": station.get("rhwl"),
+                "pmdl": station.get("pmdl"),
+                "division": station.get("division"),
+                "district": station.get("district"),
+                "upazilla": station.get("upazilla"),
+                "union": station.get("union"),
+                "dateOfRhwl": station.get("date_of_rhwl"),
+            }
+        )
+
+    return points, metric_summary
+
+
 @router.get("/geospatial-risk", response_model=APIResponse)
 async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     db = get_database()
     exposures = await db["infra_exposure_reports"].find().sort("created_at", -1).to_list(length=None)
     vulnerable_rows = await db["vulnerable_communities"].find().sort("created_at", -1).to_list(length=None)
-    processed_news = await db["official_feed_analysis"].find().sort("processed_at", -1).limit(50).to_list(length=50)
+    processed_news = await db["news_articles_processed"].find({"source_name": "sources_txt"}).sort("processed_at", -1).limit(50).to_list(length=50)
     latest_snapshot = await db["impact_summary_snapshots"].find_one(sort=[("snapshot_at", -1)])
 
     district_coords: dict[str, tuple[float, float]] = {
@@ -457,7 +709,16 @@ async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAu
 
                 hazard_tags = item.get("hazard_tags") or []
                 hazard = hazard_tags[0] if isinstance(hazard_tags, list) and hazard_tags else "flood"
-                severity = "High" if hazard in {"flood", "cyclone", "landslide", "water_level"} else "Medium"
+                signal = item.get("risk_signal") or {}
+                level = str(signal.get("level", "")).lower()
+                if level == "critical":
+                    severity = "Critical"
+                elif level == "high":
+                    severity = "High"
+                elif level == "warning":
+                    severity = "Medium"
+                else:
+                    severity = "High" if hazard in {"flood", "cyclone", "landslide", "water_level"} else "Medium"
 
                 points.append(
                     {
@@ -473,17 +734,31 @@ async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAu
                     }
                 )
 
+    ffwc_points: list[dict[str, Any]] = []
+    ffwc_summary: dict[str, Any] | None = None
+    try:
+        ffwc_points, ffwc_summary = _ffwc_points_and_summary()
+    except Exception:  # noqa: BLE001
+        ffwc_points = []
+        ffwc_summary = None
+
+    all_points = ffwc_points + points
+
     data = {
         "metrics": {
-            "exposedInfra": max(exposed_infra, len(points)),
-            "highRiskAreas": max(high_risk_areas, len([row for row in points if str(row.get("severity", "")).lower() in {"high", "critical"}])),
+            "exposedInfra": max(exposed_infra, len(all_points)),
+            "highRiskAreas": max(
+                high_risk_areas,
+                len([row for row in all_points if str(row.get("severity", "")).lower() in {"high", "critical"}]),
+            ),
             "affectedPopulation": affected_pop,
             "damagedRoads": damaged_roads,
             "shelterCapacity": shelter_capacity,
             "dangerLevel": (latest_snapshot or {}).get("danger_level", "warning"),
         },
-        "points": points,
-        "priorityAreas": points[:8],
+        "points": all_points,
+        "priorityAreas": all_points[:8],
+        "stationSummary": ffwc_summary,
     }
     return success_response("Geospatial risk payload", _serialize(data))
 

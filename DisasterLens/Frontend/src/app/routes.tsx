@@ -22,7 +22,6 @@ import { GeospatialRiskDashboardView } from "./pages/GeospatialRiskDashboardView
 import { CriticalInfrastructureExposureView } from "./pages/CriticalInfrastructureExposureView";
 import { VulnerableCommunitiesView } from "./pages/VulnerableCommunitiesView";
 import { RiskAssessmentPipelineView } from "./pages/RiskAssessmentPipelineView";
-import { DisasterDetailsView } from "./pages/DisasterDetailsView";
 import { AddCoverageView } from "./pages/AddCoverageView";
 import { RegisterAuthorityView } from "./pages/RegisterAuthorityView";
 import { LocalAuthorityDashboardView } from "./pages/LocalAuthorityDashboardView";
@@ -65,10 +64,6 @@ export const router = createBrowserRouter([
       {
         path: "/district-weather",
         Component: DistrictWeatherView,
-      },
-      {
-        path: "/disaster-details",
-        Component: DisasterDetailsView,
       },
       {
         path: "/view-alert",

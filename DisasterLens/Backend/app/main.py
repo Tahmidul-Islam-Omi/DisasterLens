@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.settings import settings
 from app.db.database import connect_to_mongo, close_mongo_connection
-from app.routes import auth_routes, authority_routes, health_routes, ingestion_routes, test_routes, volunteer_routes
+from app.routes import auth_routes, authority_routes, health_routes, ingestion_routes, public_routes, test_routes, volunteer_routes
 from app.services.bootstrap_data_service import ensure_seed_data
 from app.services.ingestion_orchestrator import ingestion_orchestrator
 from app.utils.logger import get_logger
@@ -82,6 +82,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_routes.router, prefix=api_prefix)
     app.include_router(test_routes.router, prefix=api_prefix)
+    app.include_router(public_routes.router, prefix=api_prefix)
     app.include_router(auth_routes.router, prefix=api_prefix)
     app.include_router(authority_routes.router, prefix=api_prefix)
     app.include_router(ingestion_routes.router, prefix=api_prefix)

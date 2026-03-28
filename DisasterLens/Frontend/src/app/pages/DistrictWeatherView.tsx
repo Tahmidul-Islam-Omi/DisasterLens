@@ -77,13 +77,9 @@ export function DistrictWeatherView() {
 
   useEffect(() => {
     const loadData = async () => {
-      if (!token) {
-        setDistricts(fallbackDistricts);
-        setSelectedDistrict(fallbackDistricts[0]);
-        return;
-      }
       try {
-        const data = await api.get<DistrictWeather[]>('/authority/district-weather', token);
+        const path = token ? '/authority/district-weather' : '/public/district-weather';
+        const data = await api.get<DistrictWeather[]>(path, token);
         setDistricts(data);
         setSelectedDistrict(data[0] || null);
       } catch (error) {

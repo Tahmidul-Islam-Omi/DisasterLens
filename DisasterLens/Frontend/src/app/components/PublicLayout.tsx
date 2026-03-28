@@ -88,18 +88,6 @@ export function PublicLayout() {
                 {t('district_weather')}
               </NavLink>
               <NavLink
-                to="/disaster-details"
-                className={({ isActive }) =>
-                  `px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    isActive
-                      ? 'bg-blue-50 text-blue-700'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }`
-                }
-              >
-                {t('disaster_details')}
-              </NavLink>
-              <NavLink
                 to="/view-alert"
                 className={({ isActive }) =>
                   `px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -123,7 +111,7 @@ export function PublicLayout() {
               >
                 <Globe className="w-5 h-5" />
                 <span className="ml-1 text-sm font-medium">
-                  {lang === 'en' ? 'বাং' : 'EN'}
+                  {lang === 'en' ? 'বাংলা' : 'EN'}
                 </span>
               </button>
 
@@ -184,18 +172,6 @@ export function PublicLayout() {
               }
             >
               {t('district_weather')}
-            </NavLink>
-            <NavLink
-              to="/disaster-details"
-              className={({ isActive }) =>
-                `px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-100'
-                }`
-              }
-            >
-              {t('disaster_details')}
             </NavLink>
             <NavLink
               to="/view-alert"
