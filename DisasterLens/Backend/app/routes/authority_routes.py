@@ -553,7 +553,7 @@ async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAu
     db = get_database()
     exposures = await db["infra_exposure_reports"].find().sort("created_at", -1).to_list(length=None)
     vulnerable_rows = await db["vulnerable_communities"].find().sort("created_at", -1).to_list(length=None)
-    processed_news = await db["news_articles_processed"].find({"source_name": "sources_txt"}).sort("processed_at", -1).limit(50).to_list(length=50)
+    processed_news = await db["news_articles_processed"].find({"source_name": "prothom_alo"}).sort("processed_at", -1).limit(50).to_list(length=50)
     latest_snapshot = await db["impact_summary_snapshots"].find_one(sort=[("snapshot_at", -1)])
 
     district_coords: dict[str, tuple[float, float]] = {
