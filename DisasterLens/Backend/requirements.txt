@@ -3,3 +3,12 @@ uvicorn[standard]
 motor
 pydantic-settings
 python-dotenv
+httpx
+beautifulsoup4
+langchain-core
+langchain-google-genai
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt
+deep-translator==1.11.4
+pypdf==5.4.0
