@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # CORS (comma-separated origins)
-    CORS_ALLOWED_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ALLOWED_ORIGINS: str = "*"
     CORS_ALLOW_ORIGIN_REGEX: str = r"https?://(localhost|127\\.0\\.1)(:\\d+)?"
 
     # MongoDB
