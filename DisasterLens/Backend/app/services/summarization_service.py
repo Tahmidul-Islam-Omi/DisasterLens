@@ -14,7 +14,11 @@ class SummarizationService:
         self._providers = get_summarizers()
 
     async def summarize(self, title: str, text: str, language: str = "en") -> SummaryResult:
-        provider_order = [settings.AI_SUMMARIZER_PROVIDER] + self._fallback_providers()
+        provider_order: list[str] = []
+        for key in [settings.AI_SUMMARIZER_PROVIDER, *self._fallback_providers(), *self._providers.keys()]:
+            normalized = key.strip()
+            if normalized and normalized not in provider_order:
+                provider_order.append(normalized)
 
         attempted: list[str] = []
         for provider_key in provider_order:
@@ -28,11 +32,7 @@ class SummarizationService:
                 logger.warning("Summarizer failed provider=%s err=%s", provider_key, exc)
 
         logger.warning("All summarizers failed attempted=%s", attempted)
-        # Guaranteed fallback so ingest never hard-fails.
-        fallback = self._providers.get("gemini")
-        if fallback is None:
-            raise RuntimeError("No summarizer providers are configured")
-        return await fallback.summarize(title=title, text=text, language=language)
+        raise RuntimeError("No summarizer providers succeeded")
 
     @staticmethod
     def _fallback_providers() -> list[str]:

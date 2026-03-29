@@ -1,17 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { 
-  Search, 
-  Thermometer, 
-  Droplets, 
-  Wind, 
-  AlertTriangle
-} from 'lucide-react';
-import { WeatherCard } from '../components/WeatherCard';
-import { ForecastPanel } from '../components/ForecastPanel';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Search } from 'lucide-react';
 import { useLanguage } from '../i18n/LanguageContext';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
+
+type MetricValue = {
+  value: number;
+  unit: string;
+};
+
+type ExpandedData = Record<string, MetricValue | string | number>;
 
 type DistrictWeather = {
   id: string;
@@ -19,10 +17,25 @@ type DistrictWeather = {
   districtBn: string;
   division: string;
   divisionBn: string;
-  temperature: number;
-  rainfall: number;
-  windSpeed: number;
+  lat: number;
+  lng: number;
+  requested_time_local: string;
+  requested_time_utc: string;
+  forecast_time_utc: string;
+  forecast_time_local: string;
+  forecast_timestamp: number;
+  expanded_data: ExpandedData;
   riskLevel: 'high' | 'moderate' | 'low';
+};
+
+type DistrictIndexItem = {
+  id: string;
+  district: string;
+  districtBn: string;
+  division: string;
+  divisionBn: string;
+  lat: number;
+  lng: number;
 };
 
 const fallbackDistricts: DistrictWeather[] = [
@@ -32,97 +45,149 @@ const fallbackDistricts: DistrictWeather[] = [
     districtBn: 'ঢাকা',
     division: 'Dhaka',
     divisionBn: 'ঢাকা',
-    temperature: 32,
-    rainfall: 45,
-    windSpeed: 28,
+    lat: 23.8103,
+    lng: 90.4125,
+    requested_time_local: '2026-03-29T13:00:00+06:00',
+    requested_time_utc: '2026-03-29T07:00:00Z',
+    forecast_time_utc: '2026-03-29T07:00:00Z',
+    forecast_time_local: '2026-03-29T13:00:00+06:00',
+    forecast_timestamp: 1774767600,
+    expanded_data: {
+      air_pressure_at_sea_level: { value: 1008.0, unit: 'hPa' },
+      air_temperature: { value: 32.3, unit: 'celsius' },
+      cloud_area_fraction: { value: 12.5, unit: '%' },
+      relative_humidity: { value: 48.6, unit: '%' },
+      wind_from_direction: { value: 166.9, unit: 'degrees' },
+      wind_speed: { value: 2.9, unit: 'm/s' },
+      next_1_hours_symbol_code: 'clearsky_day',
+      next_1_hours_precipitation_amount: { value: 0.0, unit: 'mm' },
+      next_6_hours_symbol_code: 'rainshowers_day',
+      next_6_hours_precipitation_amount: { value: 4.3, unit: 'mm' },
+      next_12_hours_symbol_code: 'lightrainshowers_day',
+    },
     riskLevel: 'moderate',
-  },
-  {
-    id: 'DW-2',
-    district: 'Sylhet',
-    districtBn: 'সিলেট',
-    division: 'Sylhet',
-    divisionBn: 'সিলেট',
-    temperature: 28,
-    rainfall: 120,
-    windSpeed: 35,
-    riskLevel: 'high',
-  },
-  {
-    id: 'DW-3',
-    district: 'Chittagong',
-    districtBn: 'চট্টগ্রাম',
-    division: 'Chittagong',
-    divisionBn: 'চট্টগ্রাম',
-    temperature: 30,
-    rainfall: 75,
-    windSpeed: 32,
-    riskLevel: 'high',
   },
 ];
 
-const districtCoords: Record<string, [number, number]> = {
-  dhaka: [23.8103, 90.4125],
-  sylhet: [24.8949, 91.8687],
-  chittagong: [22.3569, 91.7832],
-};
+function asMetric(value: MetricValue | string | number | undefined): MetricValue | null {
+  if (!value || typeof value !== 'object' || !('value' in value) || !('unit' in value)) {
+    return null;
+  }
+  const numeric = Number((value as MetricValue).value);
+  if (Number.isNaN(numeric)) {
+    return null;
+  }
+  return { value: numeric, unit: String((value as MetricValue).unit) };
+}
+
+function formatMetric(value: MetricValue | string | number | undefined): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return String(value);
+  }
+  const metric = asMetric(value);
+  if (!metric) {
+    return '-';
+  }
+  return `${metric.value} ${metric.unit}`;
+}
 
 export function DistrictWeatherView() {
   const { t, d } = useLanguage();
   const { token } = useAuth();
-  const [districts, setDistricts] = useState<DistrictWeather[]>([]);
+  const [districts, setDistricts] = useState<DistrictIndexItem[]>([]);
   const [selectedDistrict, setSelectedDistrict] = useState<DistrictWeather | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const [isLoadingDistrict, setIsLoadingDistrict] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
       try {
-        const path = token ? '/authority/district-weather' : '/public/district-weather';
-        const data = await api.get<DistrictWeather[]>(path, token);
-        setDistricts(data);
-        setSelectedDistrict(data[0] || null);
+        const indexPath = token ? '/authority/district-weather/index' : '/public/district-weather/index';
+        const indexRows = await api.get<DistrictIndexItem[]>(indexPath, token);
+
+        if (!indexRows.length) {
+          setDistricts([]);
+          setSelectedDistrict(null);
+          return;
+        }
+
+        setDistricts(indexRows);
+
+        const first = indexRows[0];
+        const livePathBase = token ? '/authority/district-weather/live' : '/public/district-weather/live';
+        const firstLive = await api.get<DistrictWeather>(
+          `${livePathBase}?district=${encodeURIComponent(first.district)}`,
+          token,
+        );
+
+        if (firstLive) {
+          setSelectedDistrict(firstLive);
+        }
       } catch (error) {
         console.error('Failed to load district weather', error);
-        setDistricts(fallbackDistricts);
+        setDistricts(
+          fallbackDistricts.map((row) => ({
+            id: row.id,
+            district: row.district,
+            districtBn: row.districtBn,
+            division: row.division,
+            divisionBn: row.divisionBn,
+            lat: row.lat,
+            lng: row.lng,
+          })),
+        );
         setSelectedDistrict(fallbackDistricts[0]);
       }
     };
+
     void loadData();
   }, [token]);
 
-  const rainfallChartData = useMemo(() => {
+  const expandedRows = useMemo(() => {
     if (!selectedDistrict) {
-      return [];
+      return [] as Array<{ key: string; label: string }>;
     }
-
-    const hourlyBase = Math.max(5, selectedDistrict.rainfall / 2.5);
     return [
-      { name: '00:00', value: Math.round(hourlyBase * 0.35) },
-      { name: '04:00', value: Math.round(hourlyBase * 0.5) },
-      { name: '08:00', value: Math.round(hourlyBase * 0.8) },
-      { name: '12:00', value: Math.round(hourlyBase * 1.15) },
-      { name: '16:00', value: Math.round(hourlyBase * 0.95) },
-      { name: '20:00', value: Math.round(hourlyBase * 0.7) },
-      { name: '23:59', value: Math.round(hourlyBase * 0.55) },
-    ];
+      { key: 'air_pressure_at_sea_level', label: 'Air Pressure At Sea Level' },
+      { key: 'air_temperature', label: 'Air Temperature' },
+      { key: 'cloud_area_fraction', label: 'Cloud Area Fraction' },
+      { key: 'relative_humidity', label: 'Relative Humidity' },
+      { key: 'wind_from_direction', label: 'Wind From Direction' },
+      { key: 'wind_speed', label: 'Wind Speed' },
+      { key: 'next_1_hours_symbol_code', label: 'Next 1 Hours Symbol Code' },
+      { key: 'next_1_hours_precipitation_amount', label: 'Next 1 Hours Precipitation Amount' },
+      { key: 'next_6_hours_symbol_code', label: 'Next 6 Hours Symbol Code' },
+      { key: 'next_6_hours_precipitation_amount', label: 'Next 6 Hours Precipitation Amount' },
+      { key: 'next_12_hours_symbol_code', label: 'Next 12 Hours Symbol Code' },
+    ].filter((item) => selectedDistrict.expanded_data[item.key] !== undefined);
   }, [selectedDistrict]);
 
-  const forecastCoords = useMemo<[number, number]>(() => {
-    if (!selectedDistrict) {
-      return [23.8103, 90.4125];
-    }
-    return districtCoords[selectedDistrict.district.trim().toLowerCase()] || [23.8103, 90.4125];
-  }, [selectedDistrict]);
-
-  const filteredDistricts = districts.filter(district => 
-    d(district.district, district.districtBn).toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredDistricts = districts.filter((district) =>
+    d(district.district, district.districtBn).toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
-  const handleSelectDistrict = (district: DistrictWeather) => {
-    setSelectedDistrict(district);
-    setSearchQuery('');
-    setShowDropdown(false);
+  const handleSelectDistrict = async (district: DistrictIndexItem) => {
+    try {
+      setIsLoadingDistrict(true);
+      const livePathBase = token ? '/authority/district-weather/live' : '/public/district-weather/live';
+      const live = await api.get<DistrictWeather>(
+        `${livePathBase}?district=${encodeURIComponent(district.district)}`,
+        token,
+      );
+      if (live) {
+        setSelectedDistrict(live);
+      }
+      setSearchQuery('');
+      setShowDropdown(false);
+    } catch (error) {
+      console.error('Failed to load live district weather', error);
+    } finally {
+      setIsLoadingDistrict(false);
+    }
   };
 
   if (!selectedDistrict) {
@@ -132,7 +197,6 @@ export function DistrictWeatherView() {
   return (
     <div className="flex-1 overflow-y-auto p-8 bg-[#F8FAFC]">
       <div className="max-w-7xl mx-auto">
-        {/* District Filter Section */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
           <h3 className="text-sm font-semibold text-gray-900 mb-4">{t('filter_by_district')}</h3>
           <div className="relative">
@@ -148,48 +212,37 @@ export function DistrictWeatherView() {
               onFocus={() => setShowDropdown(true)}
               className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
-            
-            {/* Dropdown Results */}
+
             {showDropdown && searchQuery && (
               <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-200 rounded-lg shadow-lg max-h-80 overflow-y-auto z-10">
                 {filteredDistricts.length > 0 ? (
-                  filteredDistricts.map((district, index) => (
+                  filteredDistricts.map((district) => (
                     <button
-                      key={index}
-                      onClick={() => handleSelectDistrict(district)}
+                      key={district.id}
+                      onClick={() => void handleSelectDistrict(district)}
                       className="w-full flex items-center justify-between p-4 hover:bg-gray-50 border-b border-gray-100 last:border-b-0 transition-colors"
                     >
                       <div className="text-left">
                         <p className="font-medium text-gray-900">{d(district.district, district.districtBn)}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <p className="text-xs text-gray-500">{d(district.division, district.divisionBn)} {t('division_suffix')}</p>
-                          <div className={`w-1.5 h-1.5 rounded-full ${
-                            district.riskLevel === 'high' ? 'bg-red-500' : 
-                            district.riskLevel === 'moderate' ? 'bg-yellow-500' : 
-                            'bg-green-500'
-                          }`}></div>
-                          <span className="text-xs text-gray-600">
-                            {district.riskLevel === 'high' ? t('high') : 
-                             district.riskLevel === 'moderate' ? t('moderate') : t('low')}
-                          </span>
-                        </div>
+                        <p className="text-xs text-gray-500 mt-1">{d(district.division, district.divisionBn)} {t('division_suffix')}</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-sm font-semibold text-gray-900">{district.temperature}°C</p>
-                        <p className="text-xs text-gray-500">{district.rainfall}mm</p>
+                        <p className="text-xs text-blue-600 font-medium">Live</p>
+                        <p className="text-[11px] text-gray-500">MET API</p>
                       </div>
                     </button>
                   ))
                 ) : (
-                  <div className="p-4 text-center text-sm text-gray-500">
-                    {t('no_districts_found')}
-                  </div>
+                  <div className="p-4 text-center text-sm text-gray-500">{t('no_districts_found')}</div>
                 )}
               </div>
             )}
           </div>
-          
-          {/* Selected District Display */}
+
+          {isLoadingDistrict && (
+            <p className="mt-3 text-xs text-gray-500">Loading district weather from MET API...</p>
+          )}
+
           {!searchQuery && (
             <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
               <div className="flex items-center justify-between">
@@ -200,18 +253,23 @@ export function DistrictWeatherView() {
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-gray-900">{selectedDistrict.temperature}°C</p>
-                    <p className="text-xs text-gray-500">{selectedDistrict.rainfall}mm</p>
+                    <p className="text-sm font-semibold text-gray-900">{formatMetric(selectedDistrict.expanded_data.air_temperature)}</p>
+                    <p className="text-xs text-gray-500">{formatMetric(selectedDistrict.expanded_data.next_1_hours_precipitation_amount)}</p>
                   </div>
-                  <div 
+                  <div
                     className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                      selectedDistrict.riskLevel === 'high' ? 'bg-red-100 text-red-700' : 
-                      selectedDistrict.riskLevel === 'moderate' ? 'bg-yellow-100 text-yellow-700' : 
-                      'bg-green-100 text-green-700'
+                      selectedDistrict.riskLevel === 'high'
+                        ? 'bg-red-100 text-red-700'
+                        : selectedDistrict.riskLevel === 'moderate'
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-green-100 text-green-700'
                     }`}
                   >
-                    {selectedDistrict.riskLevel === 'high' ? t('high') : 
-                     selectedDistrict.riskLevel === 'moderate' ? t('moderate') : t('low')}
+                    {selectedDistrict.riskLevel === 'high'
+                      ? t('high')
+                      : selectedDistrict.riskLevel === 'moderate'
+                        ? t('moderate')
+                        : t('low')}
                   </div>
                 </div>
               </div>
@@ -219,156 +277,48 @@ export function DistrictWeatherView() {
           )}
         </div>
 
-        {/* District Information Section */}
         <div className="mb-6">
           <div className="flex items-center gap-3 mb-2">
             <h2 className="text-2xl font-bold text-gray-900">{d(selectedDistrict.district, selectedDistrict.districtBn)} {t('district_suffix')}</h2>
-            <div 
+            <div
               className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                selectedDistrict.riskLevel === 'high' ? 'bg-red-100 text-red-700' : 
-                selectedDistrict.riskLevel === 'moderate' ? 'bg-yellow-100 text-yellow-700' : 
-                'bg-green-100 text-green-700'
+                selectedDistrict.riskLevel === 'high'
+                  ? 'bg-red-100 text-red-700'
+                  : selectedDistrict.riskLevel === 'moderate'
+                    ? 'bg-yellow-100 text-yellow-700'
+                    : 'bg-green-100 text-green-700'
               }`}
             >
-              {selectedDistrict.riskLevel === 'high' ? t('high') : 
-               selectedDistrict.riskLevel === 'moderate' ? t('moderate') : t('low')} {t('warning_suffix')}
+              {selectedDistrict.riskLevel === 'high'
+                ? t('high')
+                : selectedDistrict.riskLevel === 'moderate'
+                  ? t('moderate')
+                  : t('low')} {t('warning_suffix')}
             </div>
           </div>
           <p className="text-gray-500 text-sm">{t('real_time_monitoring')}</p>
         </div>
 
-        {/* Detailed Metrics */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <WeatherCard
-            title={t('temperature')}
-            value={selectedDistrict.temperature.toString()}
-            unit="°C"
-            icon={Thermometer}
-            trend={t('since_morning')}
-            color="#0EA5E9"
-          />
-          <WeatherCard
-            title={t('hourly_rainfall')}
-            value={selectedDistrict.rainfall.toString()}
-            unit="mm"
-            icon={Droplets}
-            trend={t('precipitation_increasing')}
-            color="#1E3A8A"
-          />
-          <WeatherCard
-            title={t('wind_speed')}
-            value={selectedDistrict.windSpeed.toString()}
-            unit="km/h"
-            icon={Wind}
-            trend={t('gusty_winds_detected')}
-            color="#F59E0B"
-          />
-          <WeatherCard
-            title={t('risk_assessment')}
-            value={selectedDistrict.riskLevel === 'high' ? t('high') : selectedDistrict.riskLevel === 'moderate' ? t('moderate') : t('low')}
-            unit=""
-            icon={AlertTriangle}
-            trend={t('flood_risk_high')}
-            color={selectedDistrict.riskLevel === 'high' ? '#DC2626' : selectedDistrict.riskLevel === 'moderate' ? '#F59E0B' : '#10B981'}
-          />
-        </div>
-
-        {/* Rain Fall Analysis Chart */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 mb-8">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">{t('rainfall_analysis_24h')}</h3>
-              <p className="text-sm text-gray-500">{t('intraday_precipitation')} {d(selectedDistrict.district, selectedDistrict.districtBn)}</p>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-blue-500"></div>
-                <span className="text-xs text-gray-600">{t('rainfall_mm')}</span>
-              </div>
-            </div>
-          </div>
-          <div className="h-[300px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={rainfallChartData}>
-                <defs key="defs">
-                  <linearGradient id="colorRain" x1="0" y1="0" x2="0" y2="1">
-                    <stop key="stop1" offset="5%" stopColor="#1E3A8A" stopOpacity={0.1}/>
-                    <stop key="stop2" offset="95%" stopColor="#1E3A8A" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid key="grid" strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-                <XAxis 
-                  key="xaxis"
-                  dataKey="name" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fontSize: 12, fill: '#64748B' }}
-                />
-                <YAxis 
-                  key="yaxis"
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fontSize: 12, fill: '#64748B' }}
-                />
-                <Tooltip 
-                  key="tooltip"
-                  contentStyle={{ 
-                    backgroundColor: '#1E293B', 
-                    border: 'none', 
-                    borderRadius: '8px',
-                    color: '#fff'
-                  }}
-                  itemStyle={{ color: '#fff' }}
-                />
-                <Area 
-                  key="area"
-                  type="monotone" 
-                  dataKey="value" 
-                  stroke="#1E3A8A" 
-                  strokeWidth={2}
-                  fillOpacity={1} 
-                  fill="url(#colorRain)" 
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* District Specific Alerts */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">{t('active_alerts')} {d(selectedDistrict.district, selectedDistrict.districtBn)} {t('district_suffix')}</h3>
-          <div className="space-y-4">
-            <div className="flex items-start gap-4 p-4 bg-red-50 rounded-lg border border-red-100">
-              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
-                <AlertTriangle className="w-5 h-5 text-red-600" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-red-900 uppercase">{t('flash_flood_warning_title')}</p>
-                <p className="text-sm text-red-700 mt-1">{t('flash_flood_warning_msg')}</p>
-                <p className="text-xs text-red-500 mt-2 font-medium">{t('issued_15_mins')}</p>
-              </div>
-            </div>
-            
-            <div className="flex items-start gap-4 p-4 bg-amber-50 rounded-lg border border-amber-100">
-              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
-                <Wind className="w-5 h-5 text-amber-600" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-amber-900 uppercase">{t('high_wind_advisory')}</p>
-                <p className="text-sm text-amber-700 mt-1">{t('high_wind_msg')}</p>
-                <p className="text-xs text-amber-500 mt-2 font-medium">{t('issued_2_hours')}</p>
-              </div>
-            </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Expanded MET Data</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-gray-500">
+                  <th className="py-2 pr-4">Field</th>
+                  <th className="py-2">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {expandedRows.map((row) => (
+                  <tr key={row.key} className="border-b border-gray-100 last:border-b-0">
+                    <td className="py-2 pr-4 font-medium text-gray-700">{row.label}</td>
+                    <td className="py-2 text-gray-900">{formatMetric(selectedDistrict.expanded_data[row.key])}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
-
-        {/* 7-Day Forecast for District */}
-        <div className="mt-8">
-          <ForecastPanel
-            latitude={forecastCoords[0]}
-            longitude={forecastCoords[1]}
-            locationLabel={d(selectedDistrict.district, selectedDistrict.districtBn)}
-          />
         </div>
       </div>
     </div>

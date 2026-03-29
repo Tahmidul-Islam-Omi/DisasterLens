@@ -102,6 +102,126 @@ async def get_volunteer_tasks(_: dict[str, Any] = Depends(require_roles("Volunte
     return success_response("Volunteer tasks", [_serialize(task) for task in tasks])
 
 
+@router.patch("/tasks/{task_id}/complete", response_model=APIResponse, summary="Mark volunteer task as completed")
+async def mark_volunteer_task_completed(
+    task_id: str,
+    _: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin")),
+) -> APIResponse:
+    now = datetime.utcnow()
+    db = get_database()
+
+    await db["tasks"].update_one(
+        {"_id": task_id},
+        {
+            "$set": {
+                "status": "completed",
+                "progress": 100,
+                "updated_at": now,
+                "completed_at": now,
+            }
+        },
+    )
+
+    task = await db["tasks"].find_one({"_id": task_id})
+    return success_response("Task marked as completed", _serialize(task) if task else None)
+
+
+def _status_from_community_payload(payload: dict[str, Any]) -> str:
+    danger_level = int(payload.get("dangerLevel", 1) or 1)
+    health_emergency = bool(payload.get("healthEmergency", False))
+    clean_water = str(payload.get("cleanWater", "adequate")).strip().lower()
+    road_access = str(payload.get("roadAccess", "clear")).strip().lower()
+
+    if health_emergency or danger_level >= 5:
+        return "rescue"
+    if danger_level >= 3 or clean_water == "critical" or road_access in {"blocked", "partial"}:
+        return "help"
+    return "safe"
+
+
+@router.post("/community-status", response_model=APIResponse, summary="Submit volunteer community status update")
+async def submit_community_status(
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin")),
+) -> APIResponse:
+    now = datetime.utcnow()
+    status_value = _status_from_community_payload(payload)
+
+    village = str(payload.get("sector", current_user.get("assignedArea", "Unknown area"))).strip() or "Unknown area"
+
+    doc = {
+        "_id": str(current_user.get("_id")),
+        "name": str(current_user.get("name", "Volunteer")).strip() or "Volunteer",
+        "nameBn": str(current_user.get("nameBn", current_user.get("name", "Volunteer"))).strip() or str(current_user.get("name", "Volunteer")),
+        "village": village,
+        "villageBn": str(payload.get("sectorBn", village)).strip() or village,
+        "phone": str(current_user.get("phone", "N/A")).strip() or "N/A",
+        "status": status_value,
+        "lastResponse": "Just now",
+        "lastResponseBn": "এইমাত্র",
+        "floodLevel": int(payload.get("floodLevel", 0) or 0),
+        "dangerLevel": int(payload.get("dangerLevel", 1) or 1),
+        "householdsAffected": int(payload.get("householdsAffected", 0) or 0),
+        "shelterOccupancy": int(payload.get("shelterOccupancy", 0) or 0),
+        "electricity": str(payload.get("electricity", "partial")).strip(),
+        "communication": str(payload.get("communication", "spotty")).strip(),
+        "cleanWater": str(payload.get("cleanWater", "adequate")).strip(),
+        "roadAccess": str(payload.get("roadAccess", "clear")).strip(),
+        "healthEmergency": bool(payload.get("healthEmergency", False)),
+        "updated_at": now,
+    }
+
+    db = get_database()
+    existing = await db["community_responses"].find_one({"_id": doc["_id"]})
+    if existing:
+        await db["community_responses"].update_one({"_id": doc["_id"]}, {"$set": doc})
+    else:
+        doc["created_at"] = now
+        await db["community_responses"].insert_one(doc)
+
+    saved = await db["community_responses"].find_one({"_id": doc["_id"]})
+    return success_response("Community status submitted", _serialize(saved) if saved else None)
+
+
+@router.post("/activity-logs", response_model=APIResponse, summary="Submit volunteer activity log")
+async def submit_activity_log(
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin")),
+) -> APIResponse:
+    now = datetime.utcnow()
+    activity_types = payload.get("activityTypes") or []
+    if not isinstance(activity_types, list):
+        activity_types = []
+
+    village = str(payload.get("village", current_user.get("assignedArea", "Unknown area"))).strip() or "Unknown area"
+    event_id = f"EV-{now.strftime('%Y%m%d%H%M%S')}-{randint(100, 999)}"
+
+    doc = {
+        "_id": event_id,
+        "eventType": "volunteer_activity",
+        "source": "Volunteer",
+        "volunteerId": str(current_user.get("_id", "")),
+        "volunteerName": str(current_user.get("name", "Volunteer")).strip() or "Volunteer",
+        "volunteerNameBn": str(current_user.get("nameBn", current_user.get("name", "Volunteer"))).strip() or str(current_user.get("name", "Volunteer")),
+        "village": village,
+        "villageBn": str(payload.get("villageBn", village)).strip() or village,
+        "timeOfActivity": str(payload.get("timeOfActivity", now.strftime("%H:%M"))).strip() or now.strftime("%H:%M"),
+        "activityTypes": [str(item).strip() for item in activity_types if str(item).strip()],
+        "households": int(payload.get("households", 0) or 0),
+        "peopleRescued": int(payload.get("peopleRescued", 0) or 0),
+        "reliefKits": int(payload.get("reliefKits", 0) or 0),
+        "notes": str(payload.get("notes", "")).strip(),
+        "urgency": str(payload.get("urgency", "routine")).strip() or "routine",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    db = get_database()
+    await db["event_logs"].insert_one(doc)
+    saved = await db["event_logs"].find_one({"_id": event_id})
+    return success_response("Activity log saved", _serialize(saved) if saved else None)
+
+
 @router.post("/infra-exposures", response_model=APIResponse, summary="Log infrastructure exposure")
 async def log_infrastructure_exposure(
     payload: dict[str, Any],

@@ -39,6 +39,7 @@ export const ROUTE_PERMISSIONS: Record<string, Role[]> = {
   '/task-management': ['LocalAuthority'],
   '/member-list': ['LocalAuthority'],
   '/community-responses': ['LocalAuthority'],
+  '/event-log': ['LocalAuthority'],
   '/union-alerts': ['LocalAuthority'],
   
   // Shared routes: LocalAuthority + Admin

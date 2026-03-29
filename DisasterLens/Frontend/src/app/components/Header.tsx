@@ -39,6 +39,7 @@ export function Header() {
       case '/volunteer-dashboard': return t('title_volunteer_dashboard');
       case '/add-coverage': return t('title_add_coverage');
       case '/log-activity': return t('title_log_activity');
+      case '/event-log': return t('title_event_log');
       case '/field-report': return t('title_field_report');
       case '/community-status': return t('title_community_status');
       case '/geospatial-risk': return t('title_geospatial_risk');

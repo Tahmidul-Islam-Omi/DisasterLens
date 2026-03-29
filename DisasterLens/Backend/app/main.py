@@ -1,5 +1,4 @@
-import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,22 +6,9 @@ from app.config.settings import settings
 from app.db.database import connect_to_mongo, close_mongo_connection
 from app.routes import auth_routes, authority_routes, health_routes, ingestion_routes, public_routes, test_routes, volunteer_routes
 from app.services.bootstrap_data_service import ensure_seed_data
-from app.services.ingestion_orchestrator import ingestion_orchestrator
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-async def _ingestion_background_worker() -> None:
-    interval = max(60, settings.INGESTION_WORKER_INTERVAL_SECONDS)
-    logger.info("Ingestion worker started interval_seconds=%d", interval)
-    while True:
-        try:
-            result = await ingestion_orchestrator.run_news_ingestion()
-            logger.info("Ingestion worker cycle completed result=%s", result)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Ingestion worker cycle failed err=%s", exc)
-        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
@@ -40,16 +26,8 @@ async def lifespan(app: FastAPI):
     logger.info(banner)
     await connect_to_mongo()
     await ensure_seed_data()
-    worker_task: asyncio.Task | None = None
-    if settings.ENABLE_INGESTION_WORKER:
-        worker_task = asyncio.create_task(_ingestion_background_worker())
-        app.state.ingestion_worker_task = worker_task
     yield
     # ── Shutdown ──────────────────────────────────────────────────────────────
-    if worker_task is not None:
-        worker_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await worker_task
     await close_mongo_connection()
     logger.info("🛑 %s shut down", settings.APP_NAME)
 

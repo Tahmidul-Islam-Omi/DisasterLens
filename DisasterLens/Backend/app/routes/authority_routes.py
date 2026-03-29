@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 from urllib.parse import parse_qs, urlparse
@@ -12,11 +15,50 @@ import urllib.request
 from fastapi import APIRouter, Depends, Query, status
 
 from app.db.database import get_database
+from app.services.district_weather_live_service import get_district_index, get_live_weather_for_district
 from app.security import require_roles
 from app.utils.response import APIResponse, success_response
 
 router = APIRouter(prefix="/authority", tags=["LocalAuthority"])
 FFWC_STATIONS_URL = "https://ffwc.bwdb.gov.bd/data_load/stations/"
+
+
+@lru_cache(maxsize=1)
+def _load_union_options() -> list[dict[str, str]]:
+    unions_file = Path(__file__).resolve().parents[1] / "utils" / "geo_union.json"
+
+    with unions_file.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, list) or not payload:
+        return []
+
+    first = payload[0]
+    rows = first.get("data", []) if isinstance(first, dict) else []
+    if not isinstance(rows, list):
+        return []
+
+    options: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        union_id = str(row.get("id", "")).strip()
+        name = str(row.get("name", "")).strip()
+        bn_name = str(row.get("bn_name", name)).strip() or name
+
+        if not union_id or not name:
+            continue
+
+        options.append(
+            {
+                "id": union_id,
+                "name": name,
+                "bn_name": bn_name,
+            }
+        )
+
+    return options
 
 
 @router.get("/dashboard/overview", response_model=APIResponse)
@@ -142,16 +184,59 @@ async def list_community_responses(_: dict[str, Any] = Depends(require_roles("Lo
     return success_response("Community responses", [_serialize(row) for row in rows])
 
 
+@router.get("/unions", response_model=APIResponse)
+async def list_unions(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    return success_response("Union options", _load_union_options())
+
+
 @router.post("/alerts", response_model=APIResponse)
 async def create_union_alert(payload: dict[str, Any], _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     now = datetime.now(timezone.utc)
-    doc = {
+    severity_raw = str(payload.get("severity", "information")).strip().lower()
+    severity = severity_raw if severity_raw in {"information", "warning", "emergency"} else "information"
+    published_date = now.date().isoformat()
+
+    authority_doc = {
         "_id": str(uuid4()),
-        **payload,
+        "headline": str(payload.get("headline", "")).strip(),
+        "headlineBn": str(payload.get("headlineBn", payload.get("headline", "")).strip()),
+        "description": str(payload.get("description", "")).strip(),
+        "descriptionBn": str(payload.get("descriptionBn", payload.get("description", "")).strip()),
+        "severity": severity,
+        "category": str(payload.get("category", "General")).strip() or "General",
+        "categoryBn": str(payload.get("categoryBn", payload.get("category", "General")).strip() or "General"),
+        "region": str(payload.get("region", "Bangladesh")).strip() or "Bangladesh",
+        "regionBn": str(payload.get("regionBn", payload.get("region", "Bangladesh")).strip() or "Bangladesh"),
+        "timeIssued": str(payload.get("timeIssued", "Just now")).strip() or "Just now",
+        "timeIssuedBn": str(payload.get("timeIssuedBn", payload.get("timeIssued", "Just now")).strip() or "Just now"),
+        "publishedDate": str(payload.get("publishedDate", published_date)).strip() or published_date,
         "created_at": now,
+        "updated_at": now,
     }
-    await get_database()["authority_alerts"].insert_one(doc)
-    return success_response("Alert created", _serialize(doc))
+
+    weather_doc = {
+        "_id": authority_doc["_id"],
+        "headline": authority_doc["headline"],
+        "headlineBn": authority_doc["headlineBn"],
+        "description": authority_doc["description"],
+        "descriptionBn": authority_doc["descriptionBn"],
+        "severity": authority_doc["severity"],
+        "category": authority_doc["category"],
+        "categoryBn": authority_doc["categoryBn"],
+        "region": authority_doc["region"],
+        "regionBn": authority_doc["regionBn"],
+        "timeIssued": authority_doc["timeIssued"],
+        "timeIssuedBn": authority_doc["timeIssuedBn"],
+        "status": "active",
+        "publishedDate": authority_doc["publishedDate"],
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    db = get_database()
+    await db["authority_alerts"].insert_one(authority_doc)
+    await db["weather_alerts"].insert_one(weather_doc)
+    return success_response("Alert created", _serialize(authority_doc))
 
 
 @router.get("/weather-alerts", response_model=APIResponse)
@@ -197,6 +282,23 @@ async def reply_query(
 async def list_district_weather(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     rows = await get_database()["district_weather"].find().to_list(length=None)
     return success_response("District weather", [_serialize(row) for row in rows])
+
+
+@router.get("/district-weather/index", response_model=APIResponse)
+async def list_district_weather_index(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    rows = get_district_index()
+    return success_response("District weather index", rows)
+
+
+@router.get("/district-weather/live", response_model=APIResponse)
+async def get_live_district_weather(
+    district: str = Query(..., min_length=1),
+    _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin")),
+) -> APIResponse:
+    row = await asyncio.to_thread(get_live_weather_for_district, district)
+    if row is None:
+        return success_response("District not found", None)
+    return success_response("Live district weather", row)
 
 
 @router.get("/missing-persons", response_model=APIResponse)
@@ -299,6 +401,12 @@ async def simplify_alert_message(payload: dict[str, Any], _: dict[str, Any] = De
 async def list_infra_exposures(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     rows = await get_database()["infra_exposure_reports"].find().sort("created_at", -1).to_list(length=None)
     return success_response("Infrastructure exposure logs", [_serialize(row) for row in rows])
+
+
+@router.get("/event-logs", response_model=APIResponse)
+async def list_event_logs(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    rows = await get_database()["event_logs"].find().sort("created_at", -1).limit(300).to_list(length=300)
+    return success_response("Event logs", [_serialize(row) for row in rows])
 
 
 def _clean_ffwc_value(value: Any) -> Any:
@@ -676,63 +784,6 @@ async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAu
                     "lng": float(lng),
                 }
             )
-
-        # If official feed text has no district names, still publish source-based geospatial points.
-        if not points:
-            source_defaults: dict[str, tuple[float, float]] = {
-                "ffwc.bwdb.gov.bd": (23.8103, 90.4125),
-                "ffwc.gov.bd": (23.8103, 90.4125),
-                "live8.bmd.gov.bd": (23.8103, 90.4125),
-                "mobile.bmd.gov.bd": (23.8103, 90.4125),
-                "unosat-geodrr.cern.ch": (23.6850, 90.3563),
-                "data.humdata.org": (23.6850, 90.3563),
-            }
-
-            for idx, item in enumerate(processed_news[:10]):
-                source_url = str(item.get("source_url", "")).strip()
-                parsed = urlparse(source_url)
-                netloc = parsed.netloc.lower()
-
-                lat_lng = None
-                if "api.met.no" in netloc:
-                    query = parse_qs(parsed.query)
-                    lat_values = query.get("lat") or []
-                    lon_values = query.get("lon") or []
-                    if lat_values and lon_values:
-                        try:
-                            lat_lng = (float(lat_values[0]), float(lon_values[0]))
-                        except Exception:  # noqa: BLE001
-                            lat_lng = None
-
-                if lat_lng is None:
-                    lat_lng = source_defaults.get(netloc, (23.8103, 90.4125))
-
-                hazard_tags = item.get("hazard_tags") or []
-                hazard = hazard_tags[0] if isinstance(hazard_tags, list) and hazard_tags else "flood"
-                signal = item.get("risk_signal") or {}
-                level = str(signal.get("level", "")).lower()
-                if level == "critical":
-                    severity = "Critical"
-                elif level == "high":
-                    severity = "High"
-                elif level == "warning":
-                    severity = "Medium"
-                else:
-                    severity = "High" if hazard in {"flood", "cyclone", "landslide", "water_level"} else "Medium"
-
-                points.append(
-                    {
-                        "id": f"official-{idx}-{netloc or 'source'}",
-                        "name": item.get("title") or "Official Hazard Feed",
-                        "type": "Official feed alert",
-                        "hazard": hazard,
-                        "severity": severity,
-                        "status": "Monitoring",
-                        "population": "N/A",
-                        "lat": float(lat_lng[0]),
-                        "lng": float(lat_lng[1]),
-                    }
-                )
 
     ffwc_points: list[dict[str, Any]] = []
     ffwc_summary: dict[str, Any] | None = None

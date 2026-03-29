@@ -9,9 +9,10 @@ from typing import Any
 import urllib.error
 import urllib.request
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
 from app.db.database import get_database
+from app.services.district_weather_live_service import get_district_index, get_live_weather_for_district
 from app.utils.response import APIResponse, success_response
 
 router = APIRouter(prefix="/public", tags=["Public"])
@@ -172,6 +173,20 @@ async def list_public_division_weather() -> APIResponse:
 async def list_public_district_weather() -> APIResponse:
     rows = await get_database()["district_weather"].find().to_list(length=None)
     return success_response("Public district weather", [_serialize(row) for row in rows])
+
+
+@router.get("/district-weather/index", response_model=APIResponse)
+async def list_public_district_weather_index() -> APIResponse:
+    rows = get_district_index()
+    return success_response("Public district weather index", rows)
+
+
+@router.get("/district-weather/live", response_model=APIResponse)
+async def get_public_live_district_weather(district: str = Query(..., min_length=1)) -> APIResponse:
+    row = await asyncio.to_thread(get_live_weather_for_district, district)
+    if row is None:
+        raise HTTPException(status_code=404, detail="District not found in geo data")
+    return success_response("Public live district weather", row)
 
 
 @router.get("/weather-alerts", response_model=APIResponse)

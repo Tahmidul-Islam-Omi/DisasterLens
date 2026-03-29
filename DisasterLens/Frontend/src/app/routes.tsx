@@ -30,6 +30,7 @@ import { TaskManagementView } from "./pages/TaskManagementView";
 import { MemberListView } from "./pages/MemberListView";
 import { CommunityResponseListView } from "./pages/CommunityResponseListView";
 import { LocalAuthorityAlertView } from "./pages/LocalAuthorityAlertView";
+import { EventLogView } from "./pages/EventLogView";
 
 // Protected Layout component with Sidebar and Header
 function ProtectedLayout() {
@@ -174,6 +175,14 @@ export const router = createBrowserRouter([
         element: (
           <ProtectedRoute>
             <CommunityResponseListView />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/event-log",
+        element: (
+          <ProtectedRoute>
+            <EventLogView />
           </ProtectedRoute>
         ),
       },

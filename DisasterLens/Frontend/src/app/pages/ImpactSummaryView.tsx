@@ -150,7 +150,7 @@ export function ImpactSummaryView() {
 
     setIsRefreshing(true);
     try {
-      await api.post('/ingestion/impact/run?include_ingestion=false', undefined, token);
+      await api.post('/ingestion/impact/run?include_ingestion=true', undefined, token);
       await loadSummaryAndIntel();
     } catch (error) {
       console.error('Failed to refresh AI analysis', error);
