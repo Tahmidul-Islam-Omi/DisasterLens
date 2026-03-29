@@ -134,6 +134,19 @@ def _is_scoped_role(current_user: dict[str, Any]) -> bool:
     return str(current_user.get("role", "")).strip() in {"LocalAuthority", "Volunteer"}
 
 
+def _status_from_community_payload(payload: dict[str, Any]) -> str:
+    danger_level = int(payload.get("dangerLevel", 1) or 1)
+    health_emergency = bool(payload.get("healthEmergency", False))
+    clean_water = str(payload.get("cleanWater", "adequate")).strip().lower()
+    road_access = str(payload.get("roadAccess", "clear")).strip().lower()
+
+    if health_emergency or danger_level >= 5:
+        return "rescue"
+    if danger_level >= 3 or clean_water == "critical" or road_access in {"blocked", "partial"}:
+        return "help"
+    return "safe"
+
+
 @router.get("/dashboard/overview", response_model=APIResponse)
 async def dashboard_overview(current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     db = get_database()
@@ -296,6 +309,7 @@ async def list_community_responses(current_user: dict[str, Any] = Depends(requir
 
         responses_by_phone: dict[str, dict[str, Any]] = {}
         responses_by_name: dict[str, dict[str, Any]] = {}
+        matched_response_ids: set[str] = set()
         for row in rows:
             phone_key = _norm(row.get("phone"))
             if phone_key:
@@ -315,6 +329,9 @@ async def list_community_responses(current_user: dict[str, Any] = Depends(requir
 
             response = responses_by_phone.get(_norm(member_phone)) or responses_by_name.get(_norm(member_name))
             if response:
+                response_id = str(response.get("_id", ""))
+                if response_id:
+                    matched_response_ids.add(response_id)
                 synthesized_rows.append(
                     {
                         **response,
@@ -343,9 +360,118 @@ async def list_community_responses(current_user: dict[str, Any] = Depends(requir
                     }
                 )
 
+        # Keep volunteer/local-authority submitted updates visible even when they don't map
+        # to a specific member row by name/phone.
+        for row in rows:
+            response_id = str(row.get("_id", ""))
+            if response_id and response_id in matched_response_ids:
+                continue
+
+            synthesized_rows.append(
+                {
+                    **row,
+                    "name": row.get("name") or row.get("reportedByName") or "Volunteer Update",
+                    "nameBn": row.get("nameBn") or row.get("reportedByName") or "Volunteer Update",
+                    "phone": row.get("phone") or "N/A",
+                    "village": row.get("village") or row.get("union") or "",
+                    "villageBn": row.get("villageBn") or row.get("unionBn") or row.get("unionbn") or row.get("village") or "",
+                    "status": row.get("status") or "no-response",
+                    "lastResponse": row.get("lastResponse") or "Just now",
+                    "lastResponseBn": row.get("lastResponseBn") or "এইমাত্র",
+                }
+            )
+
         return success_response("Community responses", [_serialize(row) for row in synthesized_rows])
 
     return success_response("Community responses", [_serialize(row) for row in rows])
+
+
+@router.patch("/community-responses/{response_id}", response_model=APIResponse)
+async def update_community_response(
+    response_id: str,
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin")),
+) -> APIResponse:
+    db = get_database()
+    now = datetime.now(timezone.utc)
+    scoped_fields = ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"]
+
+    find_query: dict[str, Any] = {"_id": response_id}
+    if _is_scoped_role(current_user):
+        find_query = {
+            "$and": [
+                {"_id": response_id},
+                _build_assigned_union_filter(current_user, scoped_fields),
+            ]
+        }
+
+    existing = await db["community_responses"].find_one(find_query)
+
+    member_doc: dict[str, Any] | None = None
+    if existing is None and _is_scoped_role(current_user):
+        member_doc = await db["members"].find_one(
+            {
+                "$and": [
+                    {"_id": response_id},
+                    _build_assigned_union_filter(current_user, scoped_fields),
+                ]
+            }
+        )
+        if member_doc is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Community response not found for your assigned union")
+
+    if member_doc is None and existing is None:
+        member_doc = await db["members"].find_one({"_id": response_id})
+
+    status_value = _status_from_community_payload(payload)
+    union_info = _resolve_assigned_union(current_user)
+
+    base_name = str((existing or {}).get("name") or (member_doc or {}).get("name") or payload.get("name") or "Community Member").strip() or "Community Member"
+    base_name_bn = str((existing or {}).get("nameBn") or (member_doc or {}).get("nameBn") or payload.get("nameBn") or base_name).strip() or base_name
+    base_phone = str((existing or {}).get("phone") or (member_doc or {}).get("phone") or payload.get("phone") or "N/A").strip() or "N/A"
+    base_village = str((existing or {}).get("village") or (member_doc or {}).get("union") or (member_doc or {}).get("village") or union_info["name"]).strip() or union_info["name"]
+    base_village_bn = str(
+        (existing or {}).get("villageBn")
+        or (member_doc or {}).get("unionbn")
+        or (member_doc or {}).get("unionBn")
+        or (member_doc or {}).get("villageBn")
+        or union_info["bn_name"]
+    ).strip() or union_info["bn_name"]
+
+    update_doc = {
+        "name": base_name,
+        "nameBn": base_name_bn,
+        "phone": base_phone,
+        "village": base_village,
+        "villageBn": base_village_bn,
+        "union": base_village,
+        "unionBn": base_village_bn,
+        "status": status_value,
+        "lastResponse": "Just now",
+        "lastResponseBn": "এইমাত্র",
+        "floodLevel": int(payload.get("floodLevel", (existing or {}).get("floodLevel", 0)) or 0),
+        "dangerLevel": int(payload.get("dangerLevel", (existing or {}).get("dangerLevel", 1)) or 1),
+        "householdsAffected": int(payload.get("householdsAffected", (existing or {}).get("householdsAffected", 0)) or 0),
+        "shelterOccupancy": int(payload.get("shelterOccupancy", (existing or {}).get("shelterOccupancy", 0)) or 0),
+        "electricity": str(payload.get("electricity", (existing or {}).get("electricity", "partial"))).strip() or "partial",
+        "communication": str(payload.get("communication", (existing or {}).get("communication", "spotty"))).strip() or "spotty",
+        "cleanWater": str(payload.get("cleanWater", (existing or {}).get("cleanWater", "adequate"))).strip() or "adequate",
+        "roadAccess": str(payload.get("roadAccess", (existing or {}).get("roadAccess", "clear"))).strip() or "clear",
+        "healthEmergency": bool(payload.get("healthEmergency", (existing or {}).get("healthEmergency", False))),
+        "updated_at": now,
+    }
+
+    await db["community_responses"].update_one(
+        {"_id": response_id},
+        {
+            "$set": update_doc,
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+
+    saved = await db["community_responses"].find_one({"_id": response_id})
+    return success_response("Community response updated", _serialize(saved) if saved else None)
 
 
 @router.get("/unions", response_model=APIResponse)
