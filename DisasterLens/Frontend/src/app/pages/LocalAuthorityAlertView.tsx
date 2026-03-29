@@ -1,52 +1,81 @@
 import { AlertCircle, Send, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import { Checkbox } from "../components/ui/checkbox";
 import { useLanguage } from "../i18n/LanguageContext";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
 
-type Village = {
-  id: string;
-  nameKey: string;
-  members: number;
-};
+type NoticeState = {
+  type: "success" | "error";
+  text: string;
+} | null;
 
 export function LocalAuthorityAlertView() {
   const { t, d } = useLanguage();
-  const { token } = useAuth();
-  const [villages, setVillages] = useState<Village[]>([]);
+  const { token, logout } = useAuth();
   const [message, setMessage] = useState("");
   const [simplifiedMessage, setSimplifiedMessage] = useState("");
   const [showSimplified, setShowSimplified] = useState(false);
-  const [selectedVillages, setSelectedVillages] = useState<string[]>([]);
+  const [previewMode, setPreviewMode] = useState<"original" | "simplified">("original");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [notice, setNotice] = useState<NoticeState>(null);
 
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const data = await api.get<Village[]>("/authority/villages", token);
-        setVillages(data);
-      } catch (error) {
-        console.error("Failed to load villages", error);
-      }
-    };
-    void loadData();
-  }, []);
+  const previewRawMessage =
+    previewMode === "simplified"
+      ? showSimplified
+        ? simplifiedMessage
+        : ""
+      : message;
+  const previewCharCount = previewRawMessage.trim().length;
+  const previewSegments = previewCharCount === 0 ? 0 : Math.ceil(previewCharCount / 160);
+  const previewDisplayMessage = previewRawMessage.trim()
+    ? previewRawMessage
+    : previewMode === "simplified"
+      ? t("alert.previewSimplifiedHint")
+      : t("alert.previewEmptyNotify");
+  const previewStatusKey = isSending
+    ? "alert.previewStatusSending"
+    : previewCharCount > 0
+      ? "alert.previewStatusReady"
+      : "alert.previewStatusDraft";
+  const previewStatusStyle = isSending
+    ? "bg-blue-500"
+    : previewCharCount > 0
+      ? "bg-emerald-500"
+      : "bg-amber-500";
 
   const handleGenerateSimplified = () => {
     if (!message.trim()) return;
+
     setIsGenerating(true);
+    setNotice(null);
+
     void (async () => {
       try {
-        const data = await api.post<{ message: string; messageBn: string }>("/authority/alerts/simplify", { message, messageBn: message }, token);
+        const data = await api.post<{ message: string; messageBn: string }>(
+          "/authority/alerts/simplify",
+          { message, messageBn: message },
+          token,
+        );
+
         setSimplifiedMessage(d(data.message, data.messageBn));
         setShowSimplified(true);
+        setPreviewMode("simplified");
+        setNotice({
+          type: "success",
+          text: t("alert.simplifySuccess"),
+        });
       } catch (error) {
         console.error("Failed to simplify message", error);
+        if (error instanceof ApiError && error.status === 401) {
+          logout();
+          return;
+        }
+        setNotice({ type: "error", text: t("alert.simplifyError") });
       } finally {
         setIsGenerating(false);
       }
@@ -54,28 +83,54 @@ export function LocalAuthorityAlertView() {
   };
 
   const handleSendBroadcast = async () => {
-    if (!message.trim() || selectedVillages.length === 0) {
+    if (!message.trim()) {
+      setNotice({ type: "error", text: t("alert.messageRequiredBeforeSend") });
       return;
     }
-    await api.post(
-      "/authority/alerts",
-      {
+
+    setIsSending(true);
+    setNotice(null);
+
+    try {
+      const payload = {
         message,
         simplifiedMessage: showSimplified ? simplifiedMessage : undefined,
-        villageIds: selectedVillages,
-      },
-      token,
-    );
-    setMessage("");
-    setSimplifiedMessage("");
-    setShowSimplified(false);
-    setSelectedVillages([]);
-  };
+      };
 
-  const toggleVillage = (id: string) => {
-    setSelectedVillages(prev => 
-      prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]
-    );
+      const response = await api.post<{
+        status: string;
+        requestId: string;
+        recipientCount?: number;
+        sentCount?: number;
+      }>(
+        "/authority/alerts",
+        payload,
+        token,
+      );
+
+      setNotice({
+        type: "success",
+        text: t("alert.sendSuccess", {
+          requestId: response.requestId,
+          status: response.status,
+          payloadChars: payload.message.length,
+        }),
+      });
+
+      setMessage("");
+      setSimplifiedMessage("");
+      setShowSimplified(false);
+      setPreviewMode("original");
+    } catch (error) {
+      console.error("Failed to send notification", error);
+      if (error instanceof ApiError && error.status === 401) {
+        logout();
+        return;
+      }
+      setNotice({ type: "error", text: t("alert.sendError") });
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
@@ -90,7 +145,7 @@ export function LocalAuthorityAlertView() {
       <main className="px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <Card className="p-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-6">{t("alert.formTitle")}</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-6">{t("alert.composeCommunityTitle")}</h2>
             
             <div className="space-y-6">
               <div className="space-y-2">
@@ -111,9 +166,10 @@ export function LocalAuthorityAlertView() {
                   className="text-blue-700 border-blue-200 bg-blue-50 hover:bg-blue-100"
                   onClick={handleGenerateSimplified}
                   disabled={isGenerating || !message.trim()}
+                  aria-label={t("alert.simplifyMsgButton")}
                 >
                   <Sparkles className={`w-4 h-4 mr-2 ${isGenerating ? "animate-pulse" : ""}`} />
-                  {isGenerating ? t("alert.aiGenerating") : t("alert.aiSimplify")}
+                  {isGenerating ? t("alert.generatingShort") : t("alert.simplifyMsgButton")}
                 </Button>
               </div>
 
@@ -121,69 +177,119 @@ export function LocalAuthorityAlertView() {
                 <div className="p-4 bg-orange-50 border border-orange-200 rounded-lg animate-in fade-in slide-in-from-top-2 duration-300">
                   <div className="flex items-center gap-2 text-orange-800 font-medium mb-2">
                     <Sparkles className="w-4 h-4" />
-                    {t("alert.aiSimplifiedTitle")}
+                    {t("alert.aiSimplifiedMessageTitle")}
                   </div>
                   <p className="text-orange-900 text-sm leading-relaxed mb-4">{simplifiedMessage}</p>
                   <Button 
                     className="w-full bg-orange-600 hover:bg-orange-700"
                     onClick={() => setMessage(simplifiedMessage)}
                   >
-                    {t("alert.useSimplified")}
+                    {t("alert.useSimplifiedMessage")}
                   </Button>
                 </div>
               )}
 
-              <div className="pt-4 border-t">
-                <Label className="mb-3 block">{t("alert.selectVillages")}</Label>
-                <div className="grid grid-cols-2 gap-3">
-                  {villages.map((village) => (
-                    <div key={village.id} className="flex items-center space-x-2 p-2 hover:bg-gray-50 rounded-md transition-colors cursor-pointer" onClick={() => toggleVillage(village.id)}>
-                      <Checkbox id={village.id} checked={selectedVillages.includes(village.id)} />
-                      <Label htmlFor={village.id} className="text-sm cursor-pointer">{t(village.nameKey)}</Label>
-                    </div>
-                  ))}
-                </div>
+              <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900">
+                {t("alert.unionAutoTargetNote")}
               </div>
 
-              <Button className="w-full bg-blue-900 h-12 text-lg" onClick={handleSendBroadcast}>
+              <Button
+                className="w-full bg-blue-900 h-12 text-lg"
+                onClick={handleSendBroadcast}
+                disabled={isSending || !message.trim()}
+                aria-label={t("alert.sendButtonShort")}
+              >
                 <Send className="w-5 h-5 mr-2" />
-                {t("alert.sendBroadcast")}
+                {isSending ? t("alert.sendingShort") : t("alert.sendButtonShort")}
               </Button>
+
+              {notice && (
+                <div
+                  className={`rounded-lg border p-3 text-sm ${
+                    notice.type === "success"
+                      ? "border-green-200 bg-green-50 text-green-800"
+                      : "border-red-200 bg-red-50 text-red-800"
+                  }`}
+                >
+                  {notice.text}
+                </div>
+              )}
             </div>
           </Card>
 
           <Card className="p-6 bg-slate-900 text-white">
             <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
               <AlertCircle className="w-5 h-5 text-orange-500" />
-              {t("alert.previewTitle")}
+              {t("alert.smsPreviewTitle")}
             </h2>
+
+            <div className="mb-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPreviewMode("original")}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  previewMode === "original"
+                    ? "border-blue-300 bg-blue-600 text-white"
+                    : "border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700"
+                }`}
+              >
+                {t("alert.previewModeOriginal")}
+              </button>
+              <button
+                type="button"
+                onClick={() => showSimplified && setPreviewMode("simplified")}
+                disabled={!showSimplified}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  previewMode === "simplified" && showSimplified
+                    ? "border-orange-300 bg-orange-600 text-white"
+                    : "border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700"
+                } ${!showSimplified ? "cursor-not-allowed opacity-50" : ""}`}
+              >
+                {t("alert.previewModeSimplified")}
+              </button>
+            </div>
+
+            <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800 p-3 text-xs text-slate-200">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className={`h-2.5 w-2.5 rounded-full ${previewStatusStyle}`}></span>
+                  {t("alert.previewStatusLabel")}:
+                </span>
+                <span className="font-semibold">{t(previewStatusKey)}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-300">
+                <span>{t("alert.previewCharactersLabel")}: {previewCharCount}</span>
+                <span>{t("alert.previewSegmentsLabel")}: {previewSegments}</span>
+                <span>{t("alert.previewUpdatedLabel")}: {t("alert.previewNow")}</span>
+              </div>
+            </div>
             
             <div className="bg-white text-black p-4 rounded-xl shadow-inner mb-6 min-h-[120px] max-w-[300px] mx-auto relative">
-              <div className="text-[10px] text-gray-500 mb-1">SMS: ResilienceAI</div>
-              <p className="text-sm font-medium">{message || t("alert.previewEmpty")}</p>
+              <div className="text-[10px] text-gray-500 mb-1">{t("alert.smsSenderLabel", { sender: "ResilienceAI" })}</div>
+              <p className="text-sm font-medium">{previewDisplayMessage}</p>
               <div className="absolute -bottom-2 -left-2 w-4 h-4 bg-white rotate-45 border-b border-l border-gray-100"></div>
             </div>
 
             <div className="space-y-4 text-slate-300 text-sm">
               <p className="flex justify-between border-b border-slate-700 pb-2">
-                <span>{t("alert.targetAudience")}:</span>
-                <span className="text-white font-medium">{selectedVillages.length} {t("common.villages")}</span>
+                <span>{t("alert.targetAudienceLabel")}:</span>
+                <span className="text-white font-medium">{t("alert.targetAudienceUnionMembers")}</span>
+              </p>
+              {/* <p className="flex justify-between border-b border-slate-700 pb-2">
+                <span>{t("alert.estimatedReachLabel")}:</span>
+                <span className="text-white font-medium">{t("alert.estimatedReachAuto")}</span>
               </p>
               <p className="flex justify-between border-b border-slate-700 pb-2">
-                <span>{t("alert.estimatedReach")}:</span>
-                <span className="text-white font-medium">~2,450 {t("common.members")}</span>
-              </p>
-              <p className="flex justify-between border-b border-slate-700 pb-2">
-                <span>{t("alert.deliveryMethod")}:</span>
-                <span className="text-white font-medium">SMS + App Notification</span>
-              </p>
+                <span>{t("alert.deliveryMethodLabel")}:</span>
+                <span className="text-white font-medium">{t("alert.deliveryMethodSmsApp")}</span>
+              </p> */}
             </div>
 
-            <div className="mt-8 p-4 bg-slate-800 rounded-lg border border-slate-700">
+            {/* <div className="mt-8 p-4 bg-slate-800 rounded-lg border border-slate-700">
               <p className="text-xs italic text-slate-400">
-                {t("alert.smsNotice")}
+                {t("alert.frontendOnlyNotice")}
               </p>
-            </div>
+            </div> */}
           </Card>
         </div>
       </main>

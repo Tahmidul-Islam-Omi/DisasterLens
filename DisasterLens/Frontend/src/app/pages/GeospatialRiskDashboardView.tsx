@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Building2,
@@ -19,7 +19,7 @@ import { WeatherCard } from '../components/WeatherCard';
 import { useLanguage } from '../i18n/LanguageContext';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
-import { CircleMarker, MapContainer, Popup, TileLayer } from 'react-leaflet';
+import { CircleMarker, MapContainer, TileLayer } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 type RiskPoint = {
@@ -32,6 +32,17 @@ type RiskPoint = {
   population: string;
   lat: number;
   lng: number;
+  impactScore?: number | null;
+  river?: string | null;
+  basin?: string | null;
+  dangerLevel?: number | null;
+  rhwl?: number | null;
+  pmdl?: number | null;
+  division?: string | null;
+  district?: string | null;
+  upazilla?: string | null;
+  union?: string | null;
+  dateOfRhwl?: string | null;
 };
 
 type RiskResponse = {
@@ -64,10 +75,14 @@ export function GeospatialRiskDashboardView() {
   const { t, bnenconvert } = useLanguage();
   const { token } = useAuth();
   const [data, setData] = useState<RiskResponse>(fallbackData);
+  const [hoveredPoint, setHoveredPoint] = useState<RiskPoint | null>(null);
+  const infoPanelRef = useRef<HTMLDivElement | null>(null);
   const [activeLayers, setActiveLayers] = useState<Record<string, boolean>>({
     flood: true,
     cyclone: true,
     landslide: true,
+    stationHeatmap: true,
+    stationMarkers: true,
     hospitals: true,
     shelters: true,
     schools: true,
@@ -87,6 +102,23 @@ export function GeospatialRiskDashboardView() {
 
     void load();
   }, [token]);
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!hoveredPoint) return;
+
+      const panel = infoPanelRef.current;
+      const target = event.target as Node | null;
+      if (!panel || !target) return;
+
+      if (!panel.contains(target)) {
+        setHoveredPoint(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [hoveredPoint]);
 
   const toggleLayer = (layer: string) => {
     setActiveLayers(prev => ({ ...prev, [layer]: !prev[layer] }));
@@ -114,6 +146,10 @@ export function GeospatialRiskDashboardView() {
     return data.points.filter((point) => shouldShowByHazard(point.hazard) && shouldShowByType(point.type));
   }, [data.points, activeLayers]);
 
+  const stationPoints = useMemo(() => {
+    return visiblePoints.filter((point) => String(point.type).toLowerCase().includes('station'));
+  }, [visiblePoints]);
+
   const center = useMemo<[number, number]>(() => {
     if (!visiblePoints.length) return [23.8103, 90.4125];
     const lat = visiblePoints.reduce((sum, row) => sum + row.lat, 0) / visiblePoints.length;
@@ -125,7 +161,21 @@ export function GeospatialRiskDashboardView() {
     const value = severity.toLowerCase();
     if (value === 'high') return '#DC2626';
     if (value === 'medium') return '#F59E0B';
-    return '#16A34A';
+    return '#EAB308';
+  };
+
+  const heatPointColor = (point: RiskPoint) => {
+    const bySeverity = markerColor(point.severity);
+    const score = typeof point.impactScore === 'number' ? point.impactScore : null;
+    if (score === null) return bySeverity;
+    if (score >= 0.67) return '#DC2626';
+    if (score >= 0.34) return '#F59E0B';
+    return '#EAB308';
+  };
+
+  const heatRadius = (point: RiskPoint) => {
+    const score = typeof point.impactScore === 'number' ? point.impactScore : 0.2;
+    return 18 + Math.round(score * 22);
   };
 
   const dangerLabel = String(data.metrics.dangerLevel || 'warning').toUpperCase();
@@ -166,27 +216,55 @@ export function GeospatialRiskDashboardView() {
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
 
-              {visiblePoints.map((point) => {
+              {activeLayers.stationHeatmap && stationPoints.map((point) => {
+                const color = heatPointColor(point);
+                return (
+                  <CircleMarker
+                    key={`heat-${point.id}`}
+                    center={[point.lat, point.lng]}
+                    radius={heatRadius(point)}
+                    pathOptions={{
+                      color,
+                      fillColor: color,
+                      fillOpacity: 0.22,
+                      opacity: 0.18,
+                      weight: 1,
+                    }}
+                  />
+                );
+              })}
+
+              {(activeLayers.stationMarkers ? visiblePoints : visiblePoints.filter((point) => !String(point.type).toLowerCase().includes('station'))).map((point) => {
                 const color = markerColor(point.severity);
+                const isStation = String(point.type).toLowerCase().includes('station');
                 return (
                   <CircleMarker
                     key={point.id}
                     center={[point.lat, point.lng]}
-                    radius={8}
+                    radius={isStation ? 6 : 8}
                     pathOptions={{ color, fillColor: color, fillOpacity: 0.9 }}
-                  >
-                    <Popup>
-                      <div className="text-sm min-w-48">
-                        <p className="font-semibold text-gray-900">{point.name}</p>
-                        <p className="text-xs text-gray-700 mt-1">{point.type} • {point.hazard}</p>
-                        <p className="text-xs text-gray-700">{point.status} • {point.severity}</p>
-                        <p className="text-xs text-gray-700">{t('affected_pop')}: {bnenconvert(point.population || 'N/A')}</p>
-                      </div>
-                    </Popup>
-                  </CircleMarker>
+                    eventHandlers={{
+                      mouseover: () => setHoveredPoint(point),
+                      click: () => setHoveredPoint(point),
+                    }}
+                  />
                 );
               })}
             </MapContainer>
+          </div>
+
+          <div ref={infoPanelRef} className="absolute top-4 right-4 z-[1200] w-[22rem] max-w-[calc(100%-2rem)] rounded-2xl border border-slate-200/70 bg-gradient-to-br from-white/95 via-slate-50/95 to-blue-50/90 p-4 shadow-xl backdrop-blur-md">
+            {!hoveredPoint ? (
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Station Insight</p>
+                <h4 className="mt-1 text-sm font-semibold text-slate-900">Hover a map point</h4>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                  Move your cursor over any station or hotspot to see live risk details.
+                </p>
+              </div>
+            ) : (
+              <HoverInfoCard point={hoveredPoint} />
+            )}
           </div>
 
           <div className="absolute bottom-4 left-4 bg-white/95 backdrop-blur rounded-lg shadow-lg border border-gray-100 p-4 z-20 w-48">
@@ -203,6 +281,10 @@ export function GeospatialRiskDashboardView() {
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
                 <span className="text-xs text-gray-600">{t('moderate_risk')}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-red-500/30 border border-red-500"></div>
+                <span className="text-xs text-gray-600">Station heatmap</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded bg-blue-500/40 border border-blue-500"></div>
@@ -230,6 +312,8 @@ export function GeospatialRiskDashboardView() {
                   <LayerToggle icon={CloudLightning} label={t('cyclone_path')} active={activeLayers.cyclone} onClick={() => toggleLayer('cyclone')} />
                   <LayerToggle icon={Thermometer} label={t('flood_zones')} active={activeLayers.flood} onClick={() => toggleLayer('flood')} />
                   <LayerToggle icon={Mountain} label={t('landslide_risk')} active={activeLayers.landslide} onClick={() => toggleLayer('landslide')} />
+                  <LayerToggle icon={Layers} label="Station Heatmap" active={activeLayers.stationHeatmap} onClick={() => toggleLayer('stationHeatmap')} />
+                  <LayerToggle icon={MapPin} label="Station Markers" active={activeLayers.stationMarkers} onClick={() => toggleLayer('stationMarkers')} />
                 </div>
               </div>
               
@@ -277,6 +361,65 @@ export function GeospatialRiskDashboardView() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function HoverInfoCard({ point }: { point: RiskPoint }) {
+  const isStation = String(point.type).toLowerCase().includes('station');
+  const level = String(point.severity).toLowerCase();
+  const badgeClass =
+    level === 'high' || level === 'critical'
+      ? 'bg-red-100 text-red-700 border-red-200'
+      : level === 'medium'
+        ? 'bg-orange-100 text-orange-700 border-orange-200'
+        : 'bg-yellow-100 text-yellow-700 border-yellow-200';
+
+  return (
+    <div>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{point.type}</p>
+          <h4 className="mt-0.5 text-sm font-semibold text-slate-900">{point.name}</h4>
+          <p className="text-xs text-slate-600">{point.hazard} • {point.status}</p>
+        </div>
+        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase ${badgeClass}`}>
+          {point.severity}
+        </span>
+      </div>
+
+      {isStation ? (
+        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-[11px] text-slate-700">
+          <DataRow label="River" value={point.river} />
+          <DataRow label="Basin" value={point.basin} />
+          <DataRow label="Danger" value={point.dangerLevel} />
+          <DataRow label="RHWL" value={point.rhwl} />
+          <DataRow label="PMDL" value={point.pmdl} />
+          <DataRow label="Division" value={point.division} />
+          <DataRow label="District" value={point.district} />
+          <DataRow label="Upazilla" value={point.upazilla} />
+          <DataRow label="Union" value={point.union} />
+          <DataRow label="Date RHWL" value={point.dateOfRhwl} />
+        </div>
+      ) : (
+        <div className="mt-3 text-xs text-slate-700">
+          <span className="font-medium">Affected population:</span> {point.population || 'N/A'}
+        </div>
+      )}
+
+      <div className="mt-3 rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-[11px] text-slate-700">
+        <span className="font-medium">Impact score:</span>{' '}
+        {typeof point.impactScore === 'number' ? point.impactScore.toFixed(3) : 'N/A'}
+      </div>
+    </div>
+  );
+}
+
+function DataRow({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="truncate text-[11px] font-medium text-slate-800">{value === null || value === undefined || value === '' ? 'N/A' : String(value)}</p>
     </div>
   );
 }

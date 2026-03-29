@@ -23,7 +23,8 @@ const severityConfig = {
 };
 
 export function WeatherAlertsView() {
-  const [selectedDate, setSelectedDate] = useState('2024-01-15');
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const [selectedDate, setSelectedDate] = useState<'all' | string>('all');
   const [alerts, setAlerts] = useState<Array<{
     id: string;
     headline: string;
@@ -47,16 +48,22 @@ export function WeatherAlertsView() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const data = await api.get<typeof alerts>('/authority/weather-alerts', token);
+        const path = token ? '/authority/weather-alerts' : '/public/weather-alerts';
+        const data = await api.get<typeof alerts>(path, token);
         setAlerts(data);
       } catch (error) {
         console.error('Failed to load weather alerts', error);
       }
     };
     void loadData();
-  }, []);
+  }, [token]);
 
-  const filteredAlerts = alerts.filter((alert) => alert.publishedDate === selectedDate);
+  const filteredAlerts = alerts.filter((alert) => {
+    if (selectedDate === 'all') {
+      return true;
+    }
+    return alert.publishedDate === selectedDate;
+  });
 
   const getSeverityStats = () => {
     return {
@@ -111,11 +118,20 @@ export function WeatherAlertsView() {
           <h3 className="text-sm font-semibold text-gray-900 mb-4">{t('filter_by_date')}</h3>
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => setSelectedDate('2024-01-15')}
+              onClick={() => setSelectedDate('all')}
               className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
-                selectedDate === '2024-01-15' ? 'text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                selectedDate === 'all' ? 'text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
-              style={selectedDate === '2024-01-15' ? { backgroundColor: '#1E3A8A' } : {}}
+              style={selectedDate === 'all' ? { backgroundColor: '#1E3A8A' } : {}}
+            >
+              All
+            </button>
+            <button
+              onClick={() => setSelectedDate(todayIso)}
+              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                selectedDate === todayIso ? 'text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+              style={selectedDate === todayIso ? { backgroundColor: '#1E3A8A' } : {}}
             >
               {t('today')}
             </button>

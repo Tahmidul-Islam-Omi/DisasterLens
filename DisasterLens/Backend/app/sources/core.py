@@ -757,10 +757,9 @@ class SourcesTxtAdapter(SourceAdapter):
 
 
 def get_all_sources() -> list[SourceAdapter]:
+    # Temporary policy: only Prothom Alo is allowed for scraping/analysis.
     return [
         ProthomAloAdapter(),
-        DailyStarAdapter(),
-        SourcesTxtAdapter(),
     ]
 
 

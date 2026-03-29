@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from app.config.settings import settings
-from app.services.llm_gateway import gemini_gateway
+from app.services.llm_gateway import gemini_gateway, qwen_gateway
 
 
 @dataclass
@@ -86,12 +86,20 @@ class QwenSummarizer(SummarizerAdapter):
         return "qwen"
 
     async def summarize(self, title: str, text: str, language: str = "en") -> SummaryResult:
-        summary = extractive_summary(title, text)
+        generated = await qwen_gateway.summarize(title=title, text=text, language=language)
+        if generated:
+            summary = generated
+            model_name = settings.QWEN_MODEL
+            confidence = 0.64
+        else:
+            summary = extractive_summary(title, text)
+            model_name = "qwen-heuristic-fallback"
+            confidence = 0.57
         return SummaryResult(
             provider=self.provider_key,
-            model="qwen-heuristic-fallback",
+            model=model_name,
             summary=summary,
-            confidence=0.57,
+            confidence=confidence,
         )
 
 

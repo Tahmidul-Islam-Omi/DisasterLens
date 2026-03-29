@@ -176,36 +176,7 @@ export const mockWeatherForecast: WeatherForecast[] = [
 // ── Districts ────────────────────────────────────────────────
 
 export const mockDistricts: DistrictWeather[] = [
-  {
-    district: "Dhaka",
-    districtBn: "ঢাকা",
-    division: "Dhaka",
-    divisionBn: "ঢাকা",
-    temperature: 32,
-    rainfall: 45,
-    windSpeed: 28,
-    riskLevel: "moderate",
-  },
-  {
-    district: "Sylhet",
-    districtBn: "সিলেট",
-    division: "Sylhet",
-    divisionBn: "সিলেট",
-    temperature: 28,
-    rainfall: 120,
-    windSpeed: 35,
-    riskLevel: "high",
-  },
-  {
-    district: "Chittagong",
-    districtBn: "চট্টগ্রাম",
-    division: "Chittagong",
-    divisionBn: "চট্টগ্রাম",
-    temperature: 30,
-    rainfall: 65,
-    windSpeed: 42,
-    riskLevel: "high",
-  },
+
 ];
 
 // ── Volunteers ───────────────────────────────────────────────

@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle, Info, AlertCircle, Clock, Send, Eye, CheckCircle } from 'lucide-react';
+import { useNavigate } from 'react-router';
+import { toast } from 'sonner';
 import { useLanguage } from '../i18n/LanguageContext';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
 
 type SeverityType = 'Information' | 'Warning' | 'Emergency';
 const severityOptions: SeverityType[] = ['Information', 'Warning', 'Emergency'];
@@ -13,12 +17,15 @@ const severityConfig = {
 
 export function CreateAlertView() {
   const { t } = useLanguage();
+  const navigate = useNavigate();
+  const { token } = useAuth();
   const [headline, setHeadline] = useState('');
   const [description, setDescription] = useState('');
   const [severity, setSeverity] = useState<SeverityType>('Information');
   const [category, setCategory] = useState('');
   const [publishTime, setPublishTime] = useState('');
   const [validUntil, setValidUntil] = useState('');
+  const [isPublishing, setIsPublishing] = useState(false);
 
   const categoryOptions = [
     t('heavy_rainfall'), t('cyclone_warning'), t('flood_risk'),
@@ -30,13 +37,50 @@ export function CreateAlertView() {
     setPublishTime(`${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`);
   }, []);
 
-  const handlePublish = () => {
-    if (!headline.trim()) { alert(t('alert_headline')); return; }
-    if (!description.trim()) { alert(t('alert_description')); return; }
-    if (!category) { alert(t('category')); return; }
-    console.log('Publishing alert:', { headline, description, severity, category, publishTime, validUntil });
-    alert(t('publish_alert') + ' ✓');
-    setHeadline(''); setDescription(''); setSeverity('Information'); setCategory(''); setValidUntil('');
+  const handlePublish = async () => {
+    if (!headline.trim()) { toast.error(t('alert_headline')); return; }
+    if (!description.trim()) { toast.error(t('alert_description')); return; }
+    if (!category) { toast.error(t('category')); return; }
+
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const severityValue = severity.toLowerCase();
+
+    try {
+      setIsPublishing(true);
+      await api.post(
+        '/authority/alerts',
+        {
+          headline,
+          headlineBn: headline,
+          description,
+          descriptionBn: description,
+          severity: severityValue,
+          category,
+          categoryBn: category,
+          region: 'Bangladesh',
+          regionBn: 'Bangladesh',
+          timeIssued: publishTime || 'Just now',
+          timeIssuedBn: publishTime || 'Just now',
+          publishedDate: today,
+          validUntil: validUntil || null,
+        },
+        token,
+      );
+
+      toast.success('Alert published successfully');
+      setHeadline('');
+      setDescription('');
+      setSeverity('Information');
+      setCategory('');
+      setValidUntil('');
+      navigate('/view-alert');
+    } catch (error) {
+      console.error('Failed to publish alert', error);
+      toast.error('Failed to publish alert. Please try again.');
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
   const config = severityConfig[severity];
@@ -118,9 +162,14 @@ export function CreateAlertView() {
             </div>
 
             <div className="flex justify-end gap-4">
-              <button onClick={handlePublish} className="px-6 py-3 rounded-lg text-white font-medium flex items-center gap-2 transition-all hover:opacity-90" style={{ backgroundColor: '#1E3A8A' }}>
+              <button
+                onClick={() => void handlePublish()}
+                disabled={isPublishing}
+                className="px-6 py-3 rounded-lg text-white font-medium flex items-center gap-2 transition-all hover:opacity-90 disabled:opacity-60"
+                style={{ backgroundColor: '#1E3A8A' }}
+              >
                 <Send className="w-5 h-5" />
-                {t('publish_alert')}
+                {isPublishing ? 'Publishing...' : t('publish_alert')}
               </button>
             </div>
           </div>
