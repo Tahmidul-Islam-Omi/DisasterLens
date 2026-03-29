@@ -1,5 +1,5 @@
 import { useLanguage } from '../i18n/LanguageContext';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { 
   Filter, Search, AlertCircle, MapPin, Clock, ShieldCheck, FileWarning, ArrowUpRight, Activity
 } from 'lucide-react';
@@ -93,7 +93,7 @@ export function IncidentLogsView() {
               <div 
                 key={incident.id}
                 onClick={() => setSelectedIncident(incident)}
-                className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-blue-50 transition-colors ${selectedIncident.id === incident.id ? 'bg-blue-50 border-l-4 border-l-[#1E3A8A]' : 'border-l-4 border-l-transparent'}`}
+                className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-blue-50 transition-colors ${selectedIncident?.id === incident.id ? 'bg-blue-50 border-l-4 border-l-[#1E3A8A]' : 'border-l-4 border-l-transparent'}`}
               >
                 <div className="flex justify-between items-start mb-2">
                   <div className="flex items-center gap-2">

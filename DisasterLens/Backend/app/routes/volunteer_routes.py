@@ -222,6 +222,60 @@ async def submit_activity_log(
     return success_response("Activity log saved", _serialize(saved) if saved else None)
 
 
+@router.post("/field-reports", response_model=APIResponse, summary="Submit volunteer field report")
+async def submit_field_report(
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin")),
+) -> APIResponse:
+    now = datetime.utcnow()
+    incident_id = f"IR-{now.strftime('%Y%m%d%H%M%S')}-{randint(100, 999)}"
+
+    incident_type = str(payload.get("incidentType", "Infrastructure Damage")).strip() or "Infrastructure Damage"
+    location = str(payload.get("location", current_user.get("assignedArea", "Unknown area"))).strip() or "Unknown area"
+    incident_summary = str(payload.get("incidentSummary", "")).strip()
+    damages_observed = str(payload.get("damagesObserved", "")).strip()
+    immediate_needs = str(payload.get("immediateNeeds", "")).strip()
+    affected_people = int(payload.get("affectedPeople", 0) or 0)
+    flagged_urgent = bool(payload.get("flaggedUrgent", False))
+
+    # Use server-side creation time as reporting time.
+    reported_time = now.strftime("%Y-%m-%d %H:%M")
+
+    doc = {
+        "_id": incident_id,
+        "type": incident_type,
+        "typeBn": str(payload.get("incidentTypeBn", incident_type)).strip() or incident_type,
+        "location": location,
+        "locationBn": str(payload.get("locationBn", location)).strip() or location,
+        "district": str(payload.get("district", location)).strip() or location,
+        "districtBn": str(payload.get("districtBn", location)).strip() or location,
+        "timeReported": reported_time,
+        "timeReportedBn": reported_time,
+        "source": "Volunteer",
+        "sourceBn": "Volunteer",
+        "verified": False,
+        "status": "active" if flagged_urgent else "investigating",
+        "severity": "critical" if flagged_urgent else ("high" if affected_people >= 500 else "moderate"),
+        "details": incident_summary,
+        "detailsBn": str(payload.get("incidentSummaryBn", incident_summary)).strip() or incident_summary,
+        "incidentSummary": incident_summary,
+        "damagesObserved": damages_observed,
+        "immediateNeeds": immediate_needs,
+        "affectedPeople": affected_people,
+        "flaggedUrgent": flagged_urgent,
+        "reportedBy": str(current_user.get("_id", "")),
+        "reportedByName": str(current_user.get("name", "Volunteer")).strip() or "Volunteer",
+        "reportedByRole": str(current_user.get("role", "Volunteer")).strip() or "Volunteer",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    db = get_database()
+    await db["incidents"].insert_one(doc)
+    saved = await db["incidents"].find_one({"_id": incident_id})
+    return success_response("Field report submitted", _serialize(saved) if saved else None)
+
+
 @router.post("/infra-exposures", response_model=APIResponse, summary="Log infrastructure exposure")
 async def log_infrastructure_exposure(
     payload: dict[str, Any],
