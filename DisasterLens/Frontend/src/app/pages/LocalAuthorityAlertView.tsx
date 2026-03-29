@@ -275,21 +275,21 @@ export function LocalAuthorityAlertView() {
                 <span>{t("alert.targetAudienceLabel")}:</span>
                 <span className="text-white font-medium">{t("alert.targetAudienceUnionMembers")}</span>
               </p>
-              <p className="flex justify-between border-b border-slate-700 pb-2">
+              {/* <p className="flex justify-between border-b border-slate-700 pb-2">
                 <span>{t("alert.estimatedReachLabel")}:</span>
                 <span className="text-white font-medium">{t("alert.estimatedReachAuto")}</span>
               </p>
               <p className="flex justify-between border-b border-slate-700 pb-2">
                 <span>{t("alert.deliveryMethodLabel")}:</span>
                 <span className="text-white font-medium">{t("alert.deliveryMethodSmsApp")}</span>
-              </p>
+              </p> */}
             </div>
 
-            <div className="mt-8 p-4 bg-slate-800 rounded-lg border border-slate-700">
+            {/* <div className="mt-8 p-4 bg-slate-800 rounded-lg border border-slate-700">
               <p className="text-xs italic text-slate-400">
                 {t("alert.frontendOnlyNotice")}
               </p>
-            </div>
+            </div> */}
           </Card>
         </div>
       </main>
