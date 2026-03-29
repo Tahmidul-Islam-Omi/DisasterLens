@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash"
     GEMINI_TIMEOUT_SECONDS: int = 30
 
+    # sms.net.bd SMS gateway
+    SMSNETBD_ENABLED: bool = False
+    SMSNETBD_API_KEY: str = ""
+    SMSNETBD_BASE_URL: str = "https://api.sms.net.bd/sendsms"
+    SMSNETBD_FORCE_TO: str = ""
+    SMSNETBD_TIMEOUT_SECONDS: int = 20
+
     # Bangladesh geo reference sources
     BANGLA_GEO_DIVISIONS_URL: str = "https://raw.githubusercontent.com/m3h3d1ha2an/banglageoapi/main/src/json/divisions.json"
     BANGLA_GEO_DISTRICTS_URL: str = "https://raw.githubusercontent.com/m3h3d1ha2an/banglageoapi/main/src/json/districts.json"

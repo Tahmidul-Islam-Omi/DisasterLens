@@ -51,7 +51,7 @@ export function Sidebar() {
     { name: t('member_list'), icon: List, path: '/member-list' },
     { name: t('event_log'), icon: Activity, path: '/event-log' },
     { name: t('alerts'), icon: AlertTriangle, path: '/view-alert' },
-    { name: t('create_alert'), icon: AlertTriangle, path: '/union-alerts' },
+    { name: t('create_alert'), icon: AlertTriangle, path: '/notify-community' },
     { name: t('community_status'), icon: HeartPulse, path: '/community-responses' },
   ];
 

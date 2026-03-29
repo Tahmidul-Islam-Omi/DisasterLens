@@ -187,7 +187,7 @@ export const router = createBrowserRouter([
         ),
       },
       {
-        path: "/union-alerts",
+        path: "/notify-community",
         element: (
           <ProtectedRoute>
             <LocalAuthorityAlertView />

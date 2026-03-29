@@ -30,6 +30,7 @@ export function Header() {
       case '/': return t('title_weather_dashboard');
       case '/district-weather': return t('title_district_weather');
       case '/create-alert': return t('title_create_alert');
+      case '/notify-community': return t('create_alert');
       case '/view-alert': return t('title_alerts');
       case '/query': return t('title_query');
       case '/impact-summary': return t('title_impact_summary');

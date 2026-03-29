@@ -12,9 +12,12 @@ import ssl
 import urllib.error
 import urllib.request
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.db.database import get_database
+from app.schemas.authority_schema import NotifyCommunityResponse, SimplifyAlertRequest, SimplifyAlertResponse
+from app.services.llm_gateway import gemini_gateway, qwen_gateway
+from app.services.sms_service import sms_service
 from app.services.district_weather_live_service import get_district_index, get_live_weather_for_district
 from app.security import require_roles
 from app.utils.response import APIResponse, success_response
@@ -189,8 +192,166 @@ async def list_unions(_: dict[str, Any] = Depends(require_roles("LocalAuthority"
     return success_response("Union options", _load_union_options())
 
 
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _extract_user_union_values(current_user: dict[str, Any]) -> list[str]:
+    candidates = [
+        current_user.get("unionId"),
+        current_user.get("union"),
+        current_user.get("unionBn"),
+        current_user.get("assignedArea"),
+        current_user.get("assignedAreaBn"),
+    ]
+    values = []
+    seen = set()
+    for item in candidates:
+        value = _normalize_text(item)
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(value)
+    return values
+
+
+async def _find_union_members(current_user: dict[str, Any]) -> list[dict[str, Any]]:
+    union_values = _extract_user_union_values(current_user)
+    if not union_values:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current authority user has no union/assigned area in users collection",
+        )
+
+    query = {
+        "$or": [
+            {"unionId": {"$in": union_values}},
+            {"union": {"$in": union_values}},
+            {"unionBn": {"$in": union_values}},
+            {"assignedArea": {"$in": union_values}},
+            {"assignedAreaBn": {"$in": union_values}},
+            {"village": {"$in": union_values}},
+            {"villageBn": {"$in": union_values}},
+        ]
+    }
+
+    members = await get_database()["members"].find(query).to_list(length=None)
+    members_with_phone = [row for row in members if _normalize_text(row.get("phone"))]
+    return members_with_phone
+
+
+async def _simplify_message_with_ai(message: str, message_bn: str | None) -> SimplifyAlertResponse:
+    base_text = message.strip()
+    base_text_bn = (message_bn or "").strip() or base_text
+
+    simple_en = None
+    simple_bn = None
+
+    if qwen_gateway.enabled:
+        simple_en = await qwen_gateway.summarize(title="Simplify Alert Message", text=base_text, language="en")
+        simple_bn = await qwen_gateway.summarize(title="বার্তা সহজ করুন", text=base_text_bn, language="bn")
+
+    if (not simple_en or not simple_bn) and gemini_gateway.enabled:
+        if not simple_en:
+            simple_en = await gemini_gateway.summarize(title="Simplify Alert Message", text=base_text, language="en")
+        if not simple_bn:
+            simple_bn = await gemini_gateway.summarize(title="বার্তা সহজ করুন", text=base_text_bn, language="bn")
+
+    # Safe fallback if AI provider is unavailable.
+    if not simple_en:
+        simple_en = base_text if len(base_text) <= 160 else f"{base_text[:157]}..."
+    if not simple_bn:
+        simple_bn = base_text_bn if len(base_text_bn) <= 160 else f"{base_text_bn[:157]}..."
+
+    return SimplifyAlertResponse(message=simple_en, messageBn=simple_bn)
+
+
 @router.post("/alerts", response_model=APIResponse)
-async def create_union_alert(payload: dict[str, Any], _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+async def create_union_alert(payload: dict[str, Any], current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    notify_message = _normalize_text(payload.get("message"))
+    if notify_message:
+        request_id = f"SMS-{uuid4().hex[:10].upper()}"
+        request_time = datetime.now(timezone.utc)
+        sms_body = _normalize_text(payload.get("simplifiedMessage")) or notify_message
+
+        members = await _find_union_members(current_user)
+        if not members:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No community members found for this authority union",
+            )
+
+        sent_count = 0
+        delivery_logs: list[dict[str, Any]] = []
+        for member in members:
+            member_phone = _normalize_text(member.get("phone"))
+            to_number = sms_service.normalize_phone(member_phone)
+            if not to_number:
+                continue
+
+            try:
+                result = await sms_service.send_sms(to_number=to_number, body=sms_body)
+                sent_count += 1
+                delivery_logs.append(
+                    {
+                        "memberId": str(member.get("_id", "")),
+                        "phone": to_number,
+                        "sid": result.get("sid"),
+                        "status": result.get("status"),
+                        "error_code": result.get("error_code"),
+                        "error_message": result.get("error_message"),
+                        "created_at": request_time,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                delivery_logs.append(
+                    {
+                        "memberId": str(member.get("_id", "")),
+                        "phone": to_number,
+                        "sid": None,
+                        "status": "failed",
+                        "error_code": None,
+                        "error_message": str(exc),
+                        "created_at": request_time,
+                    }
+                )
+
+        if sent_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="SMS gateway did not accept any send request. Check sms.net.bd credentials and destination number.",
+            )
+
+        db = get_database()
+        union_values = _extract_user_union_values(current_user)
+        request_doc = {
+            "_id": request_id,
+            "authorityUserId": str(current_user.get("_id", "")),
+            "authorityRole": str(current_user.get("role", "")),
+            "authorityUnion": union_values[0] if union_values else "",
+            "message": notify_message,
+            "simplifiedMessage": _normalize_text(payload.get("simplifiedMessage")) or None,
+            "smsBody": sms_body,
+            "recipientCount": len(members),
+            "sentCount": sent_count,
+            "created_at": request_time,
+            "updated_at": request_time,
+        }
+        await db["community_alert_requests"].insert_one(request_doc)
+        if delivery_logs:
+            await db["sms_dispatch_logs"].insert_many(delivery_logs)
+
+        response_payload = NotifyCommunityResponse(
+            status="queued",
+            requestId=request_id,
+            recipientCount=len(members),
+            sentCount=sent_count,
+        )
+        return success_response("Community SMS alert request accepted", response_payload.model_dump())
+
     now = datetime.now(timezone.utc)
     severity_raw = str(payload.get("severity", "information")).strip().lower()
     severity = severity_raw if severity_raw in {"information", "warning", "emergency"} else "information"
@@ -382,19 +543,9 @@ async def list_recent_tasks(_: dict[str, Any] = Depends(require_roles("LocalAuth
 
 
 @router.post("/alerts/simplify", response_model=APIResponse)
-async def simplify_alert_message(payload: dict[str, Any], _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
-    message = payload.get("message", "").strip()
-    if not message:
-        return success_response("Simplified message", {"message": "", "messageBn": ""})
-
-    simplified = message
-    if len(message) > 140:
-        simplified = f"{message[:137]}..."
-    data = {
-        "message": simplified,
-        "messageBn": payload.get("messageBn", simplified),
-    }
-    return success_response("Simplified alert message", data)
+async def simplify_alert_message(payload: SimplifyAlertRequest, _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    data = await _simplify_message_with_ai(payload.message, payload.messageBn)
+    return success_response("Simplified alert message", data.model_dump())
 
 
 @router.get("/infra-exposures", response_model=APIResponse)
