@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <circle cx="256" cy="256" r="240" fill="black"/>
+  <g transform="translate(256,256)">
+    <!-- Magnifying glass circle -->
+    <circle cx="-30" cy="-30" r="100" fill="none" stroke="black" stroke-width="24"/>
+    <!-- Magnifying glass handle -->
+    <line x1="45" y1="45" x2="120" y2="120" stroke="black" stroke-width="28" stroke-linecap="round"/>
+    <!-- Alert triangle inside lens -->
+    <polygon points="-30,-70 10,-10 -70,-10" fill="black" stroke="white" stroke-width="6"/>
+    <line x1="-30" y1="-55" x2="-30" y2="-30" stroke="white" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="-30" cy="-18" r="4" fill="white"/>
+  </g>
+</svg>
