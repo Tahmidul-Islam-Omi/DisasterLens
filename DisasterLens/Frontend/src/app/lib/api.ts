@@ -6,6 +6,16 @@ export type ApiEnvelope<T> = {
   data: T;
 };
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -24,11 +34,27 @@ async function request<T>(
     headers,
   });
 
-  const json = (await response.json()) as ApiEnvelope<T>;
-  if (!response.ok || !json.success) {
-    throw new Error(json.message || "Request failed");
+  const json = (await response.json().catch(() => null)) as
+    | ApiEnvelope<T>
+    | { detail?: string; message?: string; success?: boolean }
+    | null;
+
+  if (!response.ok) {
+    const backendMessage =
+      (json && "message" in json && typeof json.message === "string" && json.message) ||
+      (json && "detail" in json && typeof json.detail === "string" && json.detail) ||
+      `Request failed (${response.status})`;
+    throw new ApiError(backendMessage, response.status);
   }
-  return json.data;
+
+  if (!json || !("success" in json) || !json.success) {
+    const backendMessage =
+      (json && "message" in json && typeof json.message === "string" && json.message) ||
+      "Request failed";
+    throw new ApiError(backendMessage, response.status || 500);
+  }
+
+  return json.data as T;
 }
 
 export const api = {

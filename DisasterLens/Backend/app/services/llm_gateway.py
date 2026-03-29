@@ -149,6 +149,36 @@ class GeminiLangChainGateway:
             logger.warning("LangChain Gemini summarize failed err=%s", exc)
             return None
 
+    async def simplify_alert_message(self, *, text: str, language: str) -> str | None:
+        if not self.enabled:
+            return None
+
+        source_text = (text or "").strip()
+        if not source_text:
+            return ""
+
+        prompt_language = "Bangla" if language == "bn" else "English"
+        prompt = (
+            "You simplify disaster alert SMS messages for community members. "
+            "Rewrite the message in clear, simple words, keep it accurate, and keep critical safety instructions. "
+            "Keep the output concise for SMS delivery (prefer <= 160 characters if possible). "
+            "Do not add new facts. Do not use markdown, labels, or quotes. "
+            f"Respond only in {prompt_language}.\n\n"
+            f"Message: {source_text[:3000]}"
+        )
+
+        try:
+            llm = self._build_llm(temperature=0.15, max_tokens=180)
+            result = await llm.ainvoke(prompt)
+            content = getattr(result, "content", "")
+            if isinstance(content, list):
+                content = " ".join(str(part) for part in content)
+            output = _clean_model_text(str(content))
+            return output or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LangChain Gemini simplify failed err=%s", exc)
+            return None
+
     async def impact_analysis(
         self,
         *,

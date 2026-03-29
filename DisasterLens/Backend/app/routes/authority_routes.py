@@ -16,14 +16,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.db.database import get_database
 from app.schemas.authority_schema import NotifyCommunityResponse, SimplifyAlertRequest, SimplifyAlertResponse
-from app.services.llm_gateway import gemini_gateway, qwen_gateway
+from app.services.llm_gateway import gemini_gateway
 from app.services.sms_service import sms_service
 from app.services.district_weather_live_service import get_district_index, get_live_weather_for_district
 from app.security import require_roles
+from app.utils.logger import get_logger
 from app.utils.response import APIResponse, success_response
 
 router = APIRouter(prefix="/authority", tags=["LocalAuthority"])
 FFWC_STATIONS_URL = "https://ffwc.bwdb.gov.bd/data_load/stations/"
+logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -247,24 +249,25 @@ async def _simplify_message_with_ai(message: str, message_bn: str | None) -> Sim
     base_text = message.strip()
     base_text_bn = (message_bn or "").strip() or base_text
 
-    simple_en = None
-    simple_bn = None
+    simple_en = await gemini_gateway.simplify_alert_message(text=base_text, language="en")
+    simple_bn = await gemini_gateway.simplify_alert_message(text=base_text_bn, language="bn")
 
-    if qwen_gateway.enabled:
-        simple_en = await qwen_gateway.summarize(title="Simplify Alert Message", text=base_text, language="en")
-        simple_bn = await qwen_gateway.summarize(title="বার্তা সহজ করুন", text=base_text_bn, language="bn")
-
-    if (not simple_en or not simple_bn) and gemini_gateway.enabled:
-        if not simple_en:
-            simple_en = await gemini_gateway.summarize(title="Simplify Alert Message", text=base_text, language="en")
-        if not simple_bn:
-            simple_bn = await gemini_gateway.summarize(title="বার্তা সহজ করুন", text=base_text_bn, language="bn")
+    used_gemini_en = bool(simple_en)
+    used_gemini_bn = bool(simple_bn)
 
     # Safe fallback if AI provider is unavailable.
     if not simple_en:
         simple_en = base_text if len(base_text) <= 160 else f"{base_text[:157]}..."
     if not simple_bn:
         simple_bn = base_text_bn if len(base_text_bn) <= 160 else f"{base_text_bn[:157]}..."
+
+    logger.info(
+        "alert_simplify provider en=%s bn=%s input_chars_en=%d input_chars_bn=%d",
+        "gemini" if used_gemini_en else "fallback",
+        "gemini" if used_gemini_bn else "fallback",
+        len(base_text),
+        len(base_text_bn),
+    )
 
     return SimplifyAlertResponse(message=simple_en, messageBn=simple_bn)
 

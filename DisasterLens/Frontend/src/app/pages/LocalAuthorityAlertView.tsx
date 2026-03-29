@@ -5,7 +5,7 @@ import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { useLanguage } from "../i18n/LanguageContext";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
 
 type NoticeState = {
@@ -15,7 +15,7 @@ type NoticeState = {
 
 export function LocalAuthorityAlertView() {
   const { t, d } = useLanguage();
-  const { token } = useAuth();
+  const { token, logout } = useAuth();
   const [message, setMessage] = useState("");
   const [simplifiedMessage, setSimplifiedMessage] = useState("");
   const [showSimplified, setShowSimplified] = useState(false);
@@ -71,6 +71,10 @@ export function LocalAuthorityAlertView() {
         });
       } catch (error) {
         console.error("Failed to simplify message", error);
+        if (error instanceof ApiError && error.status === 401) {
+          logout();
+          return;
+        }
         setNotice({ type: "error", text: t("alert.simplifyError") });
       } finally {
         setIsGenerating(false);
@@ -119,6 +123,10 @@ export function LocalAuthorityAlertView() {
       setPreviewMode("original");
     } catch (error) {
       console.error("Failed to send notification", error);
+      if (error instanceof ApiError && error.status === 401) {
+        logout();
+        return;
+      }
       setNotice({ type: "error", text: t("alert.sendError") });
     } finally {
       setIsSending(false);
