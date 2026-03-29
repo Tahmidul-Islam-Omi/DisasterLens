@@ -35,6 +35,7 @@ def _clean_model_text(text: str) -> str:
     if not value:
         return ""
 
+    print("Raw model output:", repr(value))
     value = re.sub(r"^```[a-zA-Z]*\s*", "", value)
     value = re.sub(r"\s*```$", "", value)
     value = re.sub(r"\s+", " ", value).strip()
@@ -55,6 +56,7 @@ def _clean_model_text(text: str) -> str:
             if len(parts) == 2:
                 value = parts[1].strip()
             break
+    print("Cleaned model output:", repr(value))
     return value
 
 
@@ -162,13 +164,13 @@ class GeminiLangChainGateway:
             "You simplify disaster alert SMS messages for community members. "
             "Rewrite the message in clear, simple words, keep it accurate, and keep critical safety instructions. "
             "Keep the output concise for SMS delivery (prefer <= 160 characters if possible). "
-            "Do not add new facts. Do not use markdown, labels, or quotes. "
+            "Do not add new facts. Do not use markdown, labels, or quotes. Be professional, polite and empathetic. "
             f"Respond only in {prompt_language}.\n\n"
             f"Message: {source_text[:3000]}"
         )
 
         try:
-            llm = self._build_llm(temperature=0.15, max_tokens=180)
+            llm = self._build_llm(temperature=0.3, max_tokens=500)
             result = await llm.ainvoke(prompt)
             content = getattr(result, "content", "")
             if isinstance(content, list):
