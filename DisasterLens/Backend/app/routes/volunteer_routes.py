@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from functools import lru_cache
+import json
+from pathlib import Path
 from random import randint
 from typing import Any
 
@@ -23,6 +26,80 @@ def _coverage_col():
 
 def _infra_col():
     return get_database()[INFRA_EXPOSURE_COLLECTION]
+
+
+@lru_cache(maxsize=1)
+def _load_union_options() -> list[dict[str, str]]:
+    unions_file = Path(__file__).resolve().parents[1] / "utils" / "geo_union.json"
+
+    with unions_file.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, list) or not payload:
+        return []
+
+    first = payload[0]
+    rows = first.get("data", []) if isinstance(first, dict) else []
+    if not isinstance(rows, list):
+        return []
+
+    options: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        union_id = str(row.get("id", "")).strip()
+        name = str(row.get("name", "")).strip()
+        bn_name = str(row.get("bn_name", name)).strip() or name
+        if not union_id or not name:
+            continue
+
+        options.append(
+            {
+                "id": union_id,
+                "name": name,
+                "bn_name": bn_name,
+            }
+        )
+
+    return options
+
+
+def _normalize_union_name(value: str | None) -> str:
+    if not value:
+        return ""
+    return " ".join(value.strip().lower().split())
+
+
+def _resolve_assigned_union(current_user: dict[str, Any]) -> dict[str, str]:
+    assigned_area = str(current_user.get("assignedArea", "")).strip()
+    assigned_area_bn = str(current_user.get("assignedAreaBn", assigned_area)).strip() or assigned_area
+
+    normalized_candidates = {
+        _normalize_union_name(assigned_area),
+        _normalize_union_name(assigned_area_bn),
+    }
+    normalized_candidates.discard("")
+
+    for option in _load_union_options():
+        option_name = str(option.get("name", "")).strip()
+        option_bn_name = str(option.get("bn_name", option_name)).strip() or option_name
+        option_keys = {
+            _normalize_union_name(option_name),
+            _normalize_union_name(option_bn_name),
+        }
+        if normalized_candidates.intersection(option_keys):
+            return {
+                "id": str(option.get("id", "")),
+                "name": option_name,
+                "bn_name": option_bn_name,
+            }
+
+    return {
+        "id": "",
+        "name": assigned_area or "Unknown area",
+        "bn_name": assigned_area_bn or assigned_area or "Unknown area",
+    }
 
 
 @router.post("/coverage-updates", response_model=APIResponse, summary="Create volunteer coverage update")
@@ -126,6 +203,60 @@ async def mark_volunteer_task_completed(
     return success_response("Task marked as completed", _serialize(task) if task else None)
 
 
+@router.get("/community-status", response_model=APIResponse, summary="Get volunteer community status for assigned union")
+async def get_community_status(
+    current_user: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin")),
+) -> APIResponse:
+    db = get_database()
+    union_info = _resolve_assigned_union(current_user)
+
+    row = await db["community_responses"].find_one({"_id": str(current_user.get("_id"))})
+    if row:
+        return success_response("Community status", _serialize(row))
+
+    # Fallback to latest status in this union so the page can still display current context.
+    row = await db["community_responses"].find_one(
+        {
+            "$or": [
+                {"village": union_info["name"]},
+                {"village": union_info["bn_name"]},
+                {"union": union_info["name"]},
+                {"union": union_info["bn_name"]},
+            ]
+        },
+        sort=[("updated_at", -1)],
+    )
+
+    if row:
+        return success_response("Community status", _serialize(row))
+
+    return success_response(
+        "Community status",
+        {
+            "id": str(current_user.get("_id", "")),
+            "name": str(current_user.get("name", "Volunteer")).strip() or "Volunteer",
+            "nameBn": str(current_user.get("nameBn", current_user.get("name", "Volunteer"))).strip()
+            or str(current_user.get("name", "Volunteer")),
+            "village": union_info["name"],
+            "villageBn": union_info["bn_name"],
+            "union": union_info["name"],
+            "unionBn": union_info["bn_name"],
+            "status": "no-response",
+            "lastResponse": "Not reported",
+            "lastResponseBn": "এখনও রিপোর্ট করা হয়নি",
+            "floodLevel": 0,
+            "dangerLevel": 1,
+            "householdsAffected": 0,
+            "shelterOccupancy": 0,
+            "electricity": "partial",
+            "communication": "partial",
+            "cleanWater": "adequate",
+            "roadAccess": "clear",
+            "healthEmergency": False,
+        },
+    )
+
+
 def _status_from_community_payload(payload: dict[str, Any]) -> str:
     danger_level = int(payload.get("dangerLevel", 1) or 1)
     health_emergency = bool(payload.get("healthEmergency", False))
@@ -146,15 +277,20 @@ async def submit_community_status(
 ) -> APIResponse:
     now = datetime.utcnow()
     status_value = _status_from_community_payload(payload)
+    union_info = _resolve_assigned_union(current_user)
 
-    village = str(payload.get("sector", current_user.get("assignedArea", "Unknown area"))).strip() or "Unknown area"
+    # Community status is always scoped to the authenticated user's assigned union.
+    village = union_info["name"]
+    village_bn = union_info["bn_name"]
 
     doc = {
         "_id": str(current_user.get("_id")),
         "name": str(current_user.get("name", "Volunteer")).strip() or "Volunteer",
         "nameBn": str(current_user.get("nameBn", current_user.get("name", "Volunteer"))).strip() or str(current_user.get("name", "Volunteer")),
         "village": village,
-        "villageBn": str(payload.get("sectorBn", village)).strip() or village,
+        "villageBn": village_bn,
+        "union": village,
+        "unionBn": village_bn,
         "phone": str(current_user.get("phone", "N/A")).strip() or "N/A",
         "status": status_value,
         "lastResponse": "Just now",

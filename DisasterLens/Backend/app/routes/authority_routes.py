@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 from urllib.parse import parse_qs, urlparse
@@ -61,13 +62,96 @@ def _load_union_options() -> list[dict[str, str]]:
     return options
 
 
-@router.get("/dashboard/overview", response_model=APIResponse)
-async def dashboard_overview(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
-    db = get_database()
-    volunteers = await db["volunteers"].find().to_list(length=None)
-    community_responses = await db["community_responses"].find().to_list(length=None)
+def _normalize_union_name(value: str | None) -> str:
+    if not value:
+        return ""
+    return " ".join(value.strip().lower().split())
 
-    total_members = 2547
+
+def _resolve_assigned_union(current_user: dict[str, Any]) -> dict[str, str]:
+    assigned_area = str(current_user.get("assignedArea", "")).strip()
+    assigned_area_bn = str(current_user.get("assignedAreaBn", assigned_area)).strip() or assigned_area
+
+    normalized_candidates = {
+        _normalize_union_name(assigned_area),
+        _normalize_union_name(assigned_area_bn),
+    }
+    normalized_candidates.discard("")
+
+    for option in _load_union_options():
+        option_name = str(option.get("name", "")).strip()
+        option_bn_name = str(option.get("bn_name", option_name)).strip() or option_name
+        option_keys = {
+            _normalize_union_name(option_name),
+            _normalize_union_name(option_bn_name),
+        }
+        if normalized_candidates.intersection(option_keys):
+            return {
+                "id": str(option.get("id", "")),
+                "name": option_name,
+                "bn_name": option_bn_name,
+            }
+
+    return {
+        "id": "",
+        "name": assigned_area or "Unknown area",
+        "bn_name": assigned_area_bn or assigned_area or "Unknown area",
+    }
+
+
+def _build_assigned_union_filter(current_user: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    union_info = _resolve_assigned_union(current_user)
+    union_names = {
+        str(union_info.get("name", "")).strip(),
+        str(union_info.get("bn_name", "")).strip(),
+    }
+    union_names.discard("")
+
+    if not union_names:
+        return {"_id": {"$exists": False}}
+
+    or_filters: list[dict[str, Any]] = []
+    for field in fields:
+        for union_name in union_names:
+            or_filters.append(
+                {
+                    field: {
+                        "$regex": f"^{re.escape(union_name)}$",
+                        "$options": "i",
+                    }
+                }
+            )
+
+    return {"$or": or_filters} if or_filters else {"_id": {"$exists": False}}
+
+
+def _is_scoped_role(current_user: dict[str, Any]) -> bool:
+    return str(current_user.get("role", "")).strip() in {"LocalAuthority", "Volunteer"}
+
+
+@router.get("/dashboard/overview", response_model=APIResponse)
+async def dashboard_overview(current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    db = get_database()
+    volunteer_query: dict[str, Any] = {}
+    member_query: dict[str, Any] = {}
+    community_query: dict[str, Any] = {}
+
+    if _is_scoped_role(current_user):
+        volunteer_query = _build_assigned_union_filter(current_user, ["assignedArea", "assignedAreaBn", "village", "villageBn"])
+        member_query = _build_assigned_union_filter(
+            current_user,
+            ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"],
+        )
+        community_query = _build_assigned_union_filter(
+            current_user,
+            ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"],
+        )
+
+    volunteers = await db["volunteers"].find(volunteer_query).to_list(length=None)
+    members = await db["members"].find(member_query).to_list(length=None)
+    community_responses = await db["community_responses"].find(community_query).to_list(length=None)
+
+    total_members = len(members)
     if community_responses:
         status_counts = {
             "safe": 0,
@@ -79,9 +163,12 @@ async def dashboard_overview(_: dict[str, Any] = Depends(require_roles("LocalAut
             current = row.get("status", "no-response")
             if current in status_counts:
                 status_counts[current] += 1
-        total_members = max(1, len(community_responses))
+        total_members = max(total_members, len(community_responses))
     else:
-        status_counts = {"safe": 1351, "help": 49, "rescue": 6, "no-response": 828}
+        status_counts = {"safe": 0, "help": 0, "rescue": 0, "no-response": 0}
+
+    known_status = status_counts["safe"] + status_counts["help"] + status_counts["rescue"]
+    status_counts["no-response"] = max(0, total_members - known_status)
 
     data = {
         "totalCommunityMembers": total_members,
@@ -173,19 +260,91 @@ async def update_task(task_id: str, payload: dict[str, Any], _: dict[str, Any] =
 
 
 @router.get("/members", response_model=APIResponse)
-async def list_members(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
-    members = await get_database()["members"].find().to_list(length=None)
+async def list_members(current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    query: dict[str, Any] = {}
+    if _is_scoped_role(current_user):
+        query = _build_assigned_union_filter(
+            current_user,
+            ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"],
+        )
+
+    members = await get_database()["members"].find(query).to_list(length=None)
     return success_response("Member list", [_serialize(row) for row in members])
 
 
 @router.get("/community-responses", response_model=APIResponse)
-async def list_community_responses(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
-    rows = await get_database()["community_responses"].find().to_list(length=None)
+async def list_community_responses(current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    query: dict[str, Any] = {}
+    member_query: dict[str, Any] = {}
+    if _is_scoped_role(current_user):
+        scoped_fields = ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"]
+        query = _build_assigned_union_filter(current_user, scoped_fields)
+        member_query = _build_assigned_union_filter(current_user, scoped_fields)
+
+    db = get_database()
+    rows = await db["community_responses"].find(query).to_list(length=None)
+    members = await db["members"].find(member_query).to_list(length=None)
+
+    if members:
+        def _norm(value: Any) -> str:
+            return " ".join(str(value or "").strip().lower().split())
+
+        responses_by_phone: dict[str, dict[str, Any]] = {}
+        responses_by_name: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            phone_key = _norm(row.get("phone"))
+            if phone_key:
+                responses_by_phone[phone_key] = row
+
+            name_key = _norm(row.get("name"))
+            if name_key and name_key not in responses_by_name:
+                responses_by_name[name_key] = row
+
+        synthesized_rows: list[dict[str, Any]] = []
+        for member in members:
+            member_phone = str(member.get("phone", "")).strip() or "N/A"
+            member_name = str(member.get("name", "Member")).strip() or "Member"
+            member_name_bn = str(member.get("nameBn", member_name)).strip() or member_name
+            union_name = str(member.get("union", member.get("village", ""))).strip()
+            union_name_bn = str(member.get("unionbn", member.get("unionBn", member.get("villageBn", union_name)))).strip() or union_name
+
+            response = responses_by_phone.get(_norm(member_phone)) or responses_by_name.get(_norm(member_name))
+            if response:
+                synthesized_rows.append(
+                    {
+                        **response,
+                        "name": response.get("name") or member_name,
+                        "nameBn": response.get("nameBn") or member_name_bn,
+                        "phone": response.get("phone") or member_phone,
+                        "village": response.get("village") or union_name,
+                        "villageBn": response.get("villageBn") or union_name_bn,
+                        "status": response.get("status") or "no-response",
+                        "lastResponse": response.get("lastResponse") or "Just now",
+                        "lastResponseBn": response.get("lastResponseBn") or "এইমাত্র",
+                    }
+                )
+            else:
+                synthesized_rows.append(
+                    {
+                        "_id": str(member.get("_id", "")),
+                        "name": member_name,
+                        "nameBn": member_name_bn,
+                        "phone": member_phone,
+                        "village": union_name,
+                        "villageBn": union_name_bn,
+                        "status": "no-response",
+                        "lastResponse": "Not yet",
+                        "lastResponseBn": "এখনও না",
+                    }
+                )
+
+        return success_response("Community responses", [_serialize(row) for row in synthesized_rows])
+
     return success_response("Community responses", [_serialize(row) for row in rows])
 
 
 @router.get("/unions", response_model=APIResponse)
-async def list_unions(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+async def list_unions(_: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin"))) -> APIResponse:
     return success_response("Union options", _load_union_options())
 
 

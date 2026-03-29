@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { HeartPulse, Activity, Zap, Droplet, Users, ShieldAlert, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -10,6 +10,19 @@ export function CommunityStatusView() {
   const { token, user } = useAuth();
 
   const [sector, setSector] = useState(user?.assignedArea || '');
+  const [sectorBn, setSectorBn] = useState(user?.assignedAreaBn || user?.assignedArea || '');
+  const [isLoadingInitial, setIsLoadingInitial] = useState(false);
+  const [savedSnapshot, setSavedSnapshot] = useState<{
+    floodLevel: number;
+    dangerLevel: number;
+    householdsAffected: number;
+    shelterOccupancy: number;
+    electricity: 'down' | 'partial' | 'up';
+    communication: 'down' | 'partial' | 'up';
+    cleanWater: 'critical' | 'low' | 'adequate';
+    roadAccess: 'blocked' | 'partial' | 'clear';
+    healthEmergency: boolean;
+  } | null>(null);
   const [floodLevel, setFloodLevel] = useState(40);
   const [dangerLevel, setDangerLevel] = useState(3);
   const [householdsAffected, setHouseholdsAffected] = useState(150);
@@ -21,21 +34,87 @@ export function CommunityStatusView() {
   const [healthEmergency, setHealthEmergency] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
+  useEffect(() => {
+    const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
+
+    const loadInitial = async () => {
+      if (!token) {
+        return;
+      }
+
+      try {
+        setIsLoadingInitial(true);
+        const [unionOptions, statusData] = await Promise.all([
+          api.get<Array<{ id: string; name: string; bn_name: string }>>('/authority/unions', token),
+          api.get<Record<string, unknown>>('/volunteer/community-status', token),
+        ]);
+
+        const assignedArea = user?.assignedArea?.trim() || '';
+        const assignedAreaBn = user?.assignedAreaBn?.trim() || assignedArea;
+
+        const matchedUnion = unionOptions.find((item) => {
+          const target = [normalize(item.name), normalize(item.bn_name)];
+          return target.includes(normalize(assignedArea)) || target.includes(normalize(assignedAreaBn));
+        });
+
+        const resolvedUnion = matchedUnion?.name || assignedArea || String(statusData.village || '');
+        const resolvedUnionBn = matchedUnion?.bn_name || assignedAreaBn || String(statusData.villageBn || resolvedUnion);
+
+        setSector(resolvedUnion);
+        setSectorBn(resolvedUnionBn);
+
+        const next = {
+          floodLevel: Number(statusData.floodLevel ?? 40),
+          dangerLevel: Number(statusData.dangerLevel ?? 3),
+          householdsAffected: Number(statusData.householdsAffected ?? 150),
+          shelterOccupancy: Number(statusData.shelterOccupancy ?? 85),
+          electricity: String(statusData.electricity ?? 'down') as 'down' | 'partial' | 'up',
+          communication: String(statusData.communication ?? 'partial') as 'down' | 'partial' | 'up',
+          cleanWater: String(statusData.cleanWater ?? 'critical') as 'critical' | 'low' | 'adequate',
+          roadAccess: String(statusData.roadAccess ?? 'partial') as 'blocked' | 'partial' | 'clear',
+          healthEmergency: Boolean(statusData.healthEmergency ?? true),
+        };
+
+        setFloodLevel(next.floodLevel);
+        setDangerLevel(next.dangerLevel);
+        setHouseholdsAffected(next.householdsAffected);
+        setShelterOccupancy(next.shelterOccupancy);
+        setElectricity(next.electricity);
+        setCommunication(next.communication);
+        setCleanWater(next.cleanWater);
+        setRoadAccess(next.roadAccess);
+        setHealthEmergency(next.healthEmergency);
+        setSavedSnapshot(next);
+      } catch (error) {
+        console.error('Failed to load assigned union community status', error);
+        toast.error(t('community_status_load_failed'));
+      } finally {
+        setIsLoadingInitial(false);
+      }
+    };
+
+    void loadInitial();
+  }, [token, user?.assignedArea, user?.assignedAreaBn]);
+
   const handleDiscard = () => {
-    setFloodLevel(40);
-    setDangerLevel(3);
-    setHouseholdsAffected(150);
-    setShelterOccupancy(85);
-    setElectricity('down');
-    setCommunication('partial');
-    setCleanWater('critical');
-    setRoadAccess('partial');
-    setHealthEmergency(true);
+    if (!savedSnapshot) {
+      return;
+    }
+
+    setFloodLevel(savedSnapshot.floodLevel);
+    setDangerLevel(savedSnapshot.dangerLevel);
+    setHouseholdsAffected(savedSnapshot.householdsAffected);
+    setShelterOccupancy(savedSnapshot.shelterOccupancy);
+    setElectricity(savedSnapshot.electricity);
+    setCommunication(savedSnapshot.communication);
+    setCleanWater(savedSnapshot.cleanWater);
+    setRoadAccess(savedSnapshot.roadAccess);
+    setHealthEmergency(savedSnapshot.healthEmergency);
   };
 
   const handleUpdate = async () => {
     if (!sector.trim()) {
-      toast.error('Sector/Location is required');
+      toast.error(t('assigned_union_missing'));
       return;
     }
 
@@ -45,7 +124,7 @@ export function CommunityStatusView() {
         '/volunteer/community-status',
         {
           sector,
-          sectorBn: sector,
+          sectorBn,
           floodLevel,
           dangerLevel,
           householdsAffected,
@@ -58,10 +137,21 @@ export function CommunityStatusView() {
         },
         token,
       );
-      toast.success('Community status updated');
+      setSavedSnapshot({
+        floodLevel,
+        dangerLevel,
+        householdsAffected,
+        shelterOccupancy,
+        electricity,
+        communication,
+        cleanWater,
+        roadAccess,
+        healthEmergency,
+      });
+      toast.success(t('community_status_updated'));
     } catch (error) {
       console.error('Failed to update community status', error);
-      toast.error('Failed to update community status');
+      toast.error(t('community_status_update_failed'));
     } finally {
       setIsSaving(false);
     }
@@ -80,10 +170,11 @@ export function CommunityStatusView() {
             <input
               type="text"
               value={sector}
-              onChange={(e) => setSector(e.target.value)}
-              placeholder="Sector / Village"
-              className="mt-2 px-3 py-2 border border-gray-300 rounded-lg text-sm w-64"
+              readOnly
+              placeholder={t('assigned_union_placeholder')}
+              className="mt-2 px-3 py-2 border border-gray-300 rounded-lg text-sm w-72 bg-gray-50 text-gray-700"
             />
+            {sectorBn && sectorBn !== sector ? <p className="text-xs text-gray-500 mt-1">{sectorBn}</p> : null}
           </div>
           <span className="bg-green-100 text-green-700 text-xs px-3 py-1 rounded-full font-semibold border border-green-200 flex items-center gap-1">
              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
@@ -108,7 +199,7 @@ export function CommunityStatusView() {
                 <div>
                   <div className="flex justify-between mb-1">
                     <label className="text-sm font-medium text-gray-700">{t('local_danger_level')}</label>
-                    <span className="text-xs font-bold text-orange-600">{`Level ${dangerLevel}`}</span>
+                    <span className="text-xs font-bold text-orange-600">{t('danger_level_value', { level: dangerLevel })}</span>
                   </div>
                   <input type="range" min="1" max="5" value={dangerLevel} onChange={(e) => setDangerLevel(Number(e.target.value))} className="w-full h-2 bg-orange-100 rounded-lg appearance-none cursor-pointer accent-orange-500" title="Local danger level" aria-label="Local danger level" />
                 </div>
@@ -225,7 +316,7 @@ export function CommunityStatusView() {
           </button>
           <button type="button" className="px-5 py-2.5 text-sm font-medium text-white bg-[#1E3A8A] rounded-lg hover:bg-blue-800 flex items-center gap-2 shadow-sm disabled:opacity-60" onClick={() => void handleUpdate()} disabled={isSaving}>
             <Check className="w-4 h-4" />
-            {isSaving ? 'Updating...' : t('update_status')}
+            {isSaving || isLoadingInitial ? t('updating') : t('update_status')}
           </button>
         </div>
       </div>
