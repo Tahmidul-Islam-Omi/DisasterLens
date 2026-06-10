@@ -1,2 +1,15 @@
+# Editor / AI assistant local config
+.claude/
+.zed/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Python
 __pycache__/
 *.pyc
+
+# Environment
+.env
