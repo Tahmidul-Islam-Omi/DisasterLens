@@ -1,5 +1,5 @@
 [build]
-  base = "DisasterLens/Frontend"
+  base = "Frontend"
   command = "npm run build"
   publish = "dist"
 
