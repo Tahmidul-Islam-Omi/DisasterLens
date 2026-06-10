@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rhoE \"api\\\\.\\(get|post|patch\\)[^;]*?\\(\\\\\"|\\\\`|'\\)\\(/[a-z\\\\-/]+\\)\" pages components)"
+    ]
+  }
+}
