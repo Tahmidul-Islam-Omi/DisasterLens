@@ -22,7 +22,6 @@ import { GeospatialRiskDashboardView } from "./pages/GeospatialRiskDashboardView
 import { CriticalInfrastructureExposureView } from "./pages/CriticalInfrastructureExposureView";
 import { VulnerableCommunitiesView } from "./pages/VulnerableCommunitiesView";
 import { RiskAssessmentPipelineView } from "./pages/RiskAssessmentPipelineView";
-import { DisasterDetailsView } from "./pages/DisasterDetailsView";
 import { AddCoverageView } from "./pages/AddCoverageView";
 import { RegisterAuthorityView } from "./pages/RegisterAuthorityView";
 import { LocalAuthorityDashboardView } from "./pages/LocalAuthorityDashboardView";
@@ -31,6 +30,7 @@ import { TaskManagementView } from "./pages/TaskManagementView";
 import { MemberListView } from "./pages/MemberListView";
 import { CommunityResponseListView } from "./pages/CommunityResponseListView";
 import { LocalAuthorityAlertView } from "./pages/LocalAuthorityAlertView";
+import { EventLogView } from "./pages/EventLogView";
 
 // Protected Layout component with Sidebar and Header
 function ProtectedLayout() {
@@ -65,10 +65,6 @@ export const router = createBrowserRouter([
       {
         path: "/district-weather",
         Component: DistrictWeatherView,
-      },
-      {
-        path: "/disaster-details",
-        Component: DisasterDetailsView,
       },
       {
         path: "/view-alert",
@@ -183,7 +179,15 @@ export const router = createBrowserRouter([
         ),
       },
       {
-        path: "/union-alerts",
+        path: "/event-log",
+        element: (
+          <ProtectedRoute>
+            <EventLogView />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/notify-community",
         element: (
           <ProtectedRoute>
             <LocalAuthorityAlertView />

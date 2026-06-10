@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ClipboardList, X } from "lucide-react";
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
@@ -19,11 +19,18 @@ type VolunteerOption = {
   status: string;
 };
 
+type UnionOption = {
+  id: string;
+  name: string;
+  bn_name: string;
+};
+
 interface AssignTaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit?: (payload: Record<string, unknown>) => Promise<void> | void;
   volunteerOptions?: VolunteerOption[];
+  unionOptions?: UnionOption[];
 }
 
 const volunteerStatusStyles: Record<string, string> = {
@@ -38,12 +45,29 @@ const volunteerStatusKeys: Record<string, string> = {
   "off-duty": "status.offDuty",
 };
 
-export function AssignTaskDialog({ open, onOpenChange, onSubmit, volunteerOptions = [] }: AssignTaskDialogProps) {
+export function AssignTaskDialog({ open, onOpenChange, onSubmit, volunteerOptions = [], unionOptions = [] }: AssignTaskDialogProps) {
   const { t, d } = useLanguage();
   const [formData, setFormData] = useState({
     title: "", type: "", priority: "", description: "", location: "", duration: "", startDateTime: "", deadline: "", equipmentNeeded: "", contactPerson: "", contactPhone: "", specialInstructions: "", requiredSkills: "",
   });
   const [selectedVolunteers, setSelectedVolunteers] = useState<string[]>([]);
+  const [selectedUnionId, setSelectedUnionId] = useState("");
+  const [unionSearch, setUnionSearch] = useState("");
+
+  const filteredUnionOptions = useMemo(() => {
+    const term = unionSearch.trim().toLowerCase();
+    if (!term) {
+      return unionOptions.slice(0, 120);
+    }
+
+    return unionOptions
+      .filter((union) => {
+        const english = union.name.toLowerCase();
+        const bangla = union.bn_name.toLowerCase();
+        return english.includes(term) || bangla.includes(term);
+      })
+      .slice(0, 120);
+  }, [unionOptions, unionSearch]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,6 +97,8 @@ export function AssignTaskDialog({ open, onOpenChange, onSubmit, volunteerOption
     onOpenChange(false);
     setFormData({ title: "", type: "", priority: "", description: "", location: "", duration: "", startDateTime: "", deadline: "", equipmentNeeded: "", contactPerson: "", contactPhone: "", specialInstructions: "", requiredSkills: "" });
     setSelectedVolunteers([]);
+    setSelectedUnionId("");
+    setUnionSearch("");
   };
 
   const handleChange = (field: string, value: string) => {
@@ -147,18 +173,40 @@ export function AssignTaskDialog({ open, onOpenChange, onSubmit, volunteerOption
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="location">{t("assignTask.locationArea")} <span className="text-red-500">*</span></Label>
-                    <Select value={formData.location} onValueChange={(value) => handleChange("location", value)} required>
+                    <Input
+                      id="location-search"
+                      placeholder="Search union"
+                      value={unionSearch}
+                      onChange={(e) => setUnionSearch(e.target.value)}
+                    />
+                    <Select
+                      value={selectedUnionId}
+                      onValueChange={(value) => {
+                        const selectedUnion = unionOptions.find((union) => union.id === value);
+                        if (!selectedUnion) {
+                          return;
+                        }
+                        setSelectedUnionId(value);
+                        handleChange("location", selectedUnion.name);
+                      }}
+                      required
+                    >
                       <SelectTrigger id="location"><SelectValue placeholder={t("assignTask.selectLocation")} /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="dakshin">{t("village.dakshinPara")}</SelectItem>
-                        <SelectItem value="madhya">{t("village.madhyaGram")}</SelectItem>
-                        <SelectItem value="char">{t("village.charJanajat")}</SelectItem>
-                        <SelectItem value="uttar">{t("village.uttarPara")}</SelectItem>
-                        <SelectItem value="paschim">{t("village.paschimBazar")}</SelectItem>
-                        <SelectItem value="purba">{t("village.purbaGhoshPara")}</SelectItem>
-                        <SelectItem value="custom">{t("village.otherLocation")}</SelectItem>
+                        {filteredUnionOptions.length > 0 ? (
+                          filteredUnionOptions.map((union) => (
+                            <SelectItem key={union.id} value={union.id}>
+                              {d(union.name, union.bn_name)}
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <div className="px-3 py-2 text-sm text-gray-500">No unions found</div>
+                        )}
                       </SelectContent>
                     </Select>
+                    {unionOptions.length > 120 && (
+                      <p className="text-xs text-gray-500">Showing up to 120 unions. Use search to narrow down.</p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="duration">{t("assignTask.estimatedDuration")} <span className="text-red-500">*</span></Label>

@@ -4,6 +4,7 @@ import {
   ClipboardList, Home, HeartPulse, Box, AlertTriangle, ChevronRight, CheckCircle2, Clock, Radar
 } from 'lucide-react';
 import { Link } from 'react-router';
+import { toast } from 'sonner';
 import { useLanguage } from '../i18n/LanguageContext';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -24,6 +25,7 @@ export function VolunteerDashboardView() {
   const { t } = useLanguage();
   const { token } = useAuth();
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
+  const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -38,6 +40,39 @@ export function VolunteerDashboardView() {
   }, []);
 
   const tasks = payload?.tasks ?? [];
+
+  const handleCompleteTask = async (task: Task) => {
+    if (task.status === 'completed' || updatingTaskId) {
+      return;
+    }
+
+    const previousPayload = payload;
+    setUpdatingTaskId(task.id);
+
+    setPayload((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      return {
+        ...prev,
+        tasks: prev.tasks.map((row) =>
+          row.id === task.id ? { ...row, status: 'completed', progress: 100 } : row,
+        ),
+      };
+    });
+
+    try {
+      await api.patch(`/volunteer/tasks/${task.id}/complete`, {}, token);
+      toast.success('Task marked as completed');
+    } catch (error) {
+      console.error('Failed to complete task', error);
+      setPayload(previousPayload);
+      toast.error('Failed to mark task as completed');
+    } finally {
+      setUpdatingTaskId(null);
+    }
+  };
+
   return (
     <div className="flex-1 overflow-y-auto bg-[#F8FAFC] p-6 lg:p-8">
       <div className="max-w-5xl mx-auto space-y-6">
@@ -86,7 +121,13 @@ export function VolunteerDashboardView() {
               <h3 className="text-lg font-bold text-gray-900 mb-4">{t('todays_tasks')}</h3>
               <div className="space-y-3">
                 {tasks.map((task, index) => (
-                  <div key={task.id} className="flex items-center p-3 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors">
+                  <button
+                    key={task.id}
+                    type="button"
+                    onClick={() => void handleCompleteTask(task)}
+                    disabled={task.status === 'completed' || updatingTaskId === task.id}
+                    className="w-full flex items-center p-3 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-70 text-left"
+                  >
                     {task.status === 'completed' ? (
                       <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0 mr-3" />
                     ) : (
@@ -96,9 +137,15 @@ export function VolunteerDashboardView() {
                     )}
                     <div className="flex-1">
                       <p className={`text-sm font-medium ${task.status === 'completed' ? 'text-gray-500 line-through' : 'text-gray-900'}`}>{task.title}</p>
-                      <p className="text-xs text-gray-500">{task.deadline || `Task ${index + 1}`}</p>
+                      <p className="text-xs text-gray-500">
+                        {task.status === 'completed'
+                          ? 'Completed'
+                          : updatingTaskId === task.id
+                            ? 'Marking as done...'
+                            : task.deadline || `Task ${index + 1}`}
+                      </p>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>

@@ -1,28 +1,35 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Search, LocateFixed } from 'lucide-react';
 import { useLanguage } from '../i18n/LanguageContext';
-import { MapContainer, TileLayer, CircleMarker, Popup, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Marker, Popup, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
+import { divIcon } from 'leaflet';
 
-type DistrictWeather = {
-  district: string;
-  districtBn: string;
+type DivisionWeather = {
+  division: string;
+  divisionBn: string;
   temperature: number;
-  rainfall: number;
+  humidity: number;
   windSpeed: number;
+  windDirection: number;
+  next12SymbolCode: string;
   riskLevel: 'critical' | 'high' | 'moderate' | 'low';
+  lat: number;
+  lng: number;
 };
 
 type RiskPoint = {
-  district: string;
-  districtBn: string;
+  division: string;
+  divisionBn: string;
   riskLevel: 'critical' | 'high' | 'moderate' | 'low';
   temperature: number;
-  rainfall: number;
+  humidity: number;
   windSpeed: number;
+  windDirection: number;
+  next12SymbolCode: string;
   lat: number;
   lng: number;
 };
@@ -37,30 +44,28 @@ type LookupWeather = {
   riskLevel: RiskPoint['riskLevel'];
 };
 
-const districtCoords: Record<string, [number, number]> = {
-  dhaka: [23.8103, 90.4125],
-  sylhet: [24.8949, 91.8687],
-  chittagong: [22.3569, 91.7832],
-};
-
 const fallbackPoints: RiskPoint[] = [
   {
-    district: 'Dhaka',
-    districtBn: 'ঢাকা',
+    division: 'Dhaka',
+    divisionBn: 'ঢাকা',
     riskLevel: 'moderate',
     temperature: 32,
-    rainfall: 45,
+    humidity: 76,
     windSpeed: 28,
+    windDirection: 145,
+    next12SymbolCode: 'partlycloudy_day',
     lat: 23.8103,
     lng: 90.4125,
   },
   {
-    district: 'Sylhet',
-    districtBn: 'সিলেট',
+    division: 'Sylhet',
+    divisionBn: 'সিলেট',
     riskLevel: 'high',
     temperature: 28,
-    rainfall: 120,
+    humidity: 84,
     windSpeed: 35,
+    windDirection: 178,
+    next12SymbolCode: 'rainshowers_day',
     lat: 24.8949,
     lng: 91.8687,
   },
@@ -91,49 +96,23 @@ export function WeatherMap() {
   const [isLookupLoading, setIsLookupLoading] = useState(false);
 
   useEffect(() => {
-    if (!token) {
-      setPoints(fallbackPoints);
-      return;
-    }
-
     const load = async () => {
       try {
-        const rows = await api.get<DistrictWeather[]>('/authority/district-weather', token);
-        const mapped = await Promise.all(
-          rows.map(async (row) => {
-            const normalized = row.district.trim().toLowerCase();
-            const directCoords = districtCoords[normalized];
-            let coords: [number, number] | undefined = directCoords;
-
-            if (!coords) {
-              try {
-                const response = await fetch(
-                  `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(`${row.district}, Bangladesh`)}`,
-                );
-                const data = (await response.json()) as Array<{ lat: string; lon: string }>;
-                if (data.length > 0) {
-                  coords = [parseFloat(data[0].lat), parseFloat(data[0].lon)];
-                }
-              } catch {
-                // Keep coords undefined; this row will be skipped.
-              }
-            }
-
-            if (!coords) return null;
-            return {
-              district: row.district,
-              districtBn: row.districtBn,
-              riskLevel: row.riskLevel,
-              temperature: row.temperature,
-              rainfall: row.rainfall,
-              windSpeed: row.windSpeed,
-              lat: coords[0],
-              lng: coords[1],
-            } as RiskPoint;
-          }),
-        );
-
-        const validPoints = mapped.filter((row): row is RiskPoint => Boolean(row));
+        const rows = await api.get<DivisionWeather[]>('/public/division-weather', token);
+        const validPoints = rows
+          .filter((row) => Number.isFinite(row.lat) && Number.isFinite(row.lng))
+          .map((row) => ({
+            division: row.division,
+            divisionBn: row.divisionBn,
+            riskLevel: row.riskLevel,
+            temperature: Number(row.temperature ?? 0),
+            humidity: Number(row.humidity ?? 0),
+            windSpeed: Number(row.windSpeed ?? 0),
+            windDirection: Number(row.windDirection ?? 0),
+            next12SymbolCode: String(row.next12SymbolCode || 'fair_day'),
+            lat: Number(row.lat),
+            lng: Number(row.lng),
+          }));
 
         setPoints(validPoints.length ? validPoints : fallbackPoints);
       } catch (error) {
@@ -152,6 +131,35 @@ export function WeatherMap() {
     const lng = points.reduce((sum, point) => sum + point.lng, 0) / points.length;
     return [lat, lng];
   }, [focusCenter, points]);
+
+  const windDirectionToCardinal = (degrees: number) => {
+    const normalized = ((degrees % 360) + 360) % 360;
+    const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const index = Math.round(normalized / 45) % 8;
+    return directions[index];
+  };
+
+  const weatherVisual = (symbolCode: string, temperature?: number) => {
+    const code = (symbolCode || '').toLowerCase();
+
+    if (code.includes('thunder')) return { icon: '⛈️', label: 'Thunder' };
+    if (code.includes('heavyrain') || code.includes('rain')) return { icon: '🌧️', label: 'Rainy' };
+    if (code.includes('snow') || code.includes('sleet')) return { icon: '🌨️', label: 'Snow/Sleet' };
+    if (code.includes('cloudy') || code.includes('fog')) return { icon: '☁️', label: 'Cloudy' };
+    if ((temperature ?? 0) >= 34) return { icon: '🌤️', label: 'Hot' };
+    if (code.includes('clear') || code.includes('fair')) return { icon: '☀️', label: 'Fair' };
+    return { icon: '🌥️', label: 'Mixed' };
+  };
+
+  const divisionMarkerIcon = (point: RiskPoint) => {
+    const visual = weatherVisual(point.next12SymbolCode, point.temperature);
+    return divIcon({
+      html: `<div style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:#ffffff;box-shadow:0 6px 14px rgba(15,23,42,0.22);border:2px solid #1e3a8a;font-size:16px;">${visual.icon}</div>`,
+      className: 'division-weather-marker',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+  };
 
   const markerColor = (risk: RiskPoint['riskLevel']) => {
     if (risk === 'critical' || risk === 'high') return '#DC2626';
@@ -342,22 +350,54 @@ export function WeatherMap() {
           {points.map((point) => {
             const color = markerColor(point.riskLevel);
             return (
-              <CircleMarker
-                key={`${point.district}-${point.lat}-${point.lng}`}
-                center={[point.lat, point.lng]}
-                radius={9}
-                pathOptions={{ color, fillColor: color, fillOpacity: 0.85 }}
-              >
-                <Popup>
-                  <div className="text-sm min-w-44">
-                    <p className="font-semibold text-gray-900">{d(point.district, point.districtBn)}</p>
-                    <p className="text-xs text-gray-700 mt-1">{t('temperature')}: {bnenconvert(point.temperature)}°C</p>
-                    <p className="text-xs text-gray-700">{t('rainfall_level')}: {bnenconvert(point.rainfall)}mm</p>
-                    <p className="text-xs text-gray-700">{t('wind_speed')}: {bnenconvert(point.windSpeed)} km/h</p>
-                    <p className={`text-xs font-semibold mt-2 ${riskTextClass(point.riskLevel)}`}>{riskLabel(point.riskLevel)}</p>
-                  </div>
-                </Popup>
-              </CircleMarker>
+              <Fragment key={`${point.division}-${point.lat}-${point.lng}`}>
+                <Marker
+                  position={[point.lat, point.lng]}
+                  icon={divisionMarkerIcon(point)}
+                >
+                  <Tooltip direction="top" offset={[0, -14]} opacity={1} className="!bg-transparent !border-none !shadow-none">
+                    <div className="pointer-events-none w-80 max-w-[calc(100vw-2rem)] rounded-2xl border border-indigo-100 bg-gradient-to-br from-white/95 via-indigo-50/95 to-sky-50/95 px-4 py-3 text-sm shadow-lg backdrop-blur-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.16em] text-indigo-500">Division Weather</p>
+                          <p className="font-semibold text-gray-900">{d(point.division, point.divisionBn)}</p>
+                        </div>
+                        <div className="rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-lg leading-none">
+                          {weatherVisual(point.next12SymbolCode, point.temperature).icon}
+                        </div>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-gray-700">
+                        <p><span className="font-medium">{t('temperature')}:</span> {bnenconvert(point.temperature.toFixed(1))}°C</p>
+                        <p><span className="font-medium">Humidity:</span> {bnenconvert(point.humidity.toFixed(0))}%</p>
+                        <p><span className="font-medium">{t('wind_speed')}:</span> {bnenconvert(point.windSpeed.toFixed(1))} km/h</p>
+                        <p><span className="font-medium">Wind Dir:</span> {bnenconvert(point.windDirection.toFixed(0))}° ({windDirectionToCardinal(point.windDirection)})</p>
+                      </div>
+                      <p className="mt-2 text-xs text-indigo-700">
+                        <span className="font-medium">Next 12h:</span> {weatherVisual(point.next12SymbolCode, point.temperature).label} ({point.next12SymbolCode})
+                      </p>
+                    </div>
+                  </Tooltip>
+                </Marker>
+
+                <CircleMarker
+                  center={[point.lat, point.lng]}
+                  radius={9}
+                  pathOptions={{ color, fillColor: color, fillOpacity: 0.85 }}
+                >
+                  <Popup>
+                    <div className="text-sm min-w-44">
+                      <p className="font-semibold text-gray-900">{d(point.division, point.divisionBn)}</p>
+                      <p className="text-xs text-gray-700 mt-1">{t('temperature')}: {bnenconvert(point.temperature)}°C</p>
+                      <p className="text-xs text-gray-700">Humidity: {bnenconvert(point.humidity)}%</p>
+                      <p className="text-xs text-gray-700">{t('wind_speed')}: {bnenconvert(point.windSpeed)} km/h</p>
+                      <p className="text-xs text-gray-700">Wind Dir: {bnenconvert(point.windDirection)}° ({windDirectionToCardinal(point.windDirection)})</p>
+                      <p className="text-xs text-gray-700">Next 12h: {point.next12SymbolCode}</p>
+                      <p className={`text-xs font-semibold mt-2 ${riskTextClass(point.riskLevel)}`}>{riskLabel(point.riskLevel)}</p>
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              </Fragment>
             );
           })}
 

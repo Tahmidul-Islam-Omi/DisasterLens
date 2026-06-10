@@ -30,6 +30,7 @@ export function Header() {
       case '/': return t('title_weather_dashboard');
       case '/district-weather': return t('title_district_weather');
       case '/create-alert': return t('title_create_alert');
+      case '/notify-community': return t('create_alert');
       case '/view-alert': return t('title_alerts');
       case '/query': return t('title_query');
       case '/impact-summary': return t('title_impact_summary');
@@ -39,6 +40,7 @@ export function Header() {
       case '/volunteer-dashboard': return t('title_volunteer_dashboard');
       case '/add-coverage': return t('title_add_coverage');
       case '/log-activity': return t('title_log_activity');
+      case '/event-log': return t('title_event_log');
       case '/field-report': return t('title_field_report');
       case '/community-status': return t('title_community_status');
       case '/geospatial-risk': return t('title_geospatial_risk');

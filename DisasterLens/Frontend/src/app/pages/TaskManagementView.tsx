@@ -16,6 +16,7 @@ export function TaskManagementView() {
   const [searchQuery, setSearchQuery] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [volunteerOptions, setVolunteerOptions] = useState<Array<{ id: string; name: string; nameBn: string; status: string }>>([]);
+  const [unionOptions, setUnionOptions] = useState<Array<{ id: string; name: string; bn_name: string }>>([]);
   const { t, d } = useLanguage();
   const { token } = useAuth();
 
@@ -44,9 +45,19 @@ export function TaskManagementView() {
     }
   };
 
+  const loadUnions = async () => {
+    try {
+      const data = await api.get<Array<{ id: string; name: string; bn_name: string }>>("/authority/unions", token);
+      setUnionOptions(data);
+    } catch (error) {
+      console.error("Failed to load unions", error);
+    }
+  };
+
   useEffect(() => {
     void loadTasks();
     void loadVolunteers();
+    void loadUnions();
   }, []);
 
   const activeTasks = tasks.filter(task => ["assigned", "in-progress"].includes(task.status));
@@ -179,6 +190,7 @@ export function TaskManagementView() {
         onOpenChange={setIsDialogOpen}
         onSubmit={handleCreateTask}
         volunteerOptions={volunteerOptions}
+        unionOptions={unionOptions}
       />
     </div>
   );

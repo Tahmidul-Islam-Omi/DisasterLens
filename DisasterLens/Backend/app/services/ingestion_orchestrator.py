@@ -9,10 +9,11 @@ import httpx
 
 from app.config.settings import settings
 from app.db.database import get_database
-from app.services.llm_gateway import gemini_gateway
+from app.services.llm_gateway import gemini_gateway, qwen_gateway
 from app.services.summarization_service import summarization_service
 from app.services.translation_service import translation_service
-from app.sources.core import SourceArticle, get_enabled_sources
+from app.sources.core import SourceArticle, get_enabled_sources, is_disaster_related
+from app.summarizers.providers import SummaryResult
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -20,8 +21,6 @@ logger = get_logger(__name__)
 INTEL_COLLECTION = "intel_articles"
 RAW_COLLECTION = "news_articles_raw"
 PROCESSED_COLLECTION = "news_articles_processed"
-OFFICIAL_FEED_RAW_COLLECTION = "official_feed_raw"
-OFFICIAL_FEED_ANALYSIS_COLLECTION = "official_feed_analysis"
 IMPACT_SNAPSHOT_COLLECTION = "impact_summary_snapshots"
 
 
@@ -36,12 +35,6 @@ class IngestionOrchestrator:
 
     def _processed_col(self):
         return get_database()[PROCESSED_COLLECTION]
-
-    def _official_feed_raw_col(self):
-        return get_database()[OFFICIAL_FEED_RAW_COLLECTION]
-
-    def _official_feed_analysis_col(self):
-        return get_database()[OFFICIAL_FEED_ANALYSIS_COLLECTION]
 
     def _impact_col(self):
         return get_database()[IMPACT_SNAPSHOT_COLLECTION]
@@ -60,10 +53,6 @@ class IngestionOrchestrator:
         updated = 0
         processed = 0
         errors: list[dict[str, str]] = []
-
-        # Keep sources.txt API records out of news collections by design.
-        await self._raw_col().delete_many({"source_name": "sources_txt"})
-        await self._processed_col().delete_many({"source_name": "sources_txt"})
 
         timeout = httpx.Timeout(settings.SCRAPER_TIMEOUT_SECONDS)
         headers = {"User-Agent": settings.SCRAPER_USER_AGENT}
@@ -111,6 +100,10 @@ class IngestionOrchestrator:
         processed = 0
 
         for article in articles:
+            if settings.DISASTER_AI_STRICT_MODE and not self._is_disaster_article(article):
+                logger.info("Skipping non-disaster article for AI summary url=%s", article.url)
+                continue
+
             fingerprint = self._fingerprint(article.fingerprint_seed())
             existing = await self._intel_col().find_one({"fingerprint": fingerprint})
             content_hash = self._fingerprint(f"{article.url}|{article.title}|{article.clean_text}")
@@ -139,14 +132,8 @@ class IngestionOrchestrator:
                 await self._intel_col().insert_one(doc)
                 ingested += 1
 
-            if article.source == "sources_txt":
-                raw_id = await self._upsert_official_feed_raw(article=article, content_hash=content_hash)
-                await self._upsert_official_feed_analysis(article=article, summary=summary.summary, raw_id=raw_id)
-                processed += 1
-                continue
-
             raw_id = await self._upsert_news_raw(article=article, content_hash=content_hash)
-            await self._upsert_news_processed(article=article, summary=summary.summary, raw_id=raw_id)
+            await self._upsert_news_processed(article=article, summary=summary, raw_id=raw_id)
             processed += 1
 
         return {
@@ -179,14 +166,16 @@ class IngestionOrchestrator:
         inserted = await self._raw_col().insert_one(payload)
         return inserted.inserted_id
 
-    async def _upsert_news_processed(self, article: SourceArticle, summary: str, raw_id):
+    async def _upsert_news_processed(self, article: SourceArticle, summary: SummaryResult, raw_id):
         now = datetime.utcnow()
-        summary_bn = summary if article.language == "bn" else None
-        summary_en = summary if article.language != "bn" else None
+        summary_bn = summary.summary if article.language == "bn" else None
+        summary_en = summary.summary if article.language != "bn" else None
 
         if article.language == "bn":
-            translated_en = await translation_service.translate_bn_to_en(summary)
-            summary_en = translated_en or summary
+            translated_en = await translation_service.translate_bn_to_en(summary.summary)
+            summary_en = translated_en or summary.summary
+
+        risk_signal = self._derive_official_risk_signal(article=article, summary=summary_en or summary.summary)
 
         payload = {
             "raw_article_id": raw_id,
@@ -197,15 +186,18 @@ class IngestionOrchestrator:
             "published_at": article.published_at,
             "language": article.language,
             "hazard_tags": article.tags,
+            "source_metadata": article.metadata,
+            "risk_signal": risk_signal,
             "verified": False,
             "affected_district_codes": [],
             "affected_upazila_codes": [],
             "linked_event_id": None,
-            "llm_model": settings.GEMINI_MODEL,
+            "llm_provider": summary.provider,
+            "llm_model": summary.model,
             "llm_summary_bn": summary_bn,
             "llm_summary_en": summary_en,
-            "llm_entities": {"source": article.source, "tags": article.tags},
-            "llm_confidence": 0.6,
+            "llm_entities": {"source": article.source, "tags": article.tags, "metadata": article.metadata},
+            "llm_confidence": summary.confidence,
             "verification_status": "unverified",
             "processed_at": now,
             "created_at": now,
@@ -214,74 +206,89 @@ class IngestionOrchestrator:
 
         await self._processed_col().update_one({"raw_article_id": raw_id}, {"$set": payload}, upsert=True)
 
-    async def _upsert_official_feed_raw(self, article: SourceArticle, content_hash: str):
-        now = datetime.utcnow()
-        payload = {
-            "source_name": article.source,
-            "source_url": article.url,
-            "canonical_url": article.url,
-            "title_raw": article.title,
-            "text_raw": article.clean_text,
-            "published_at_raw": article.published_at,
-            "language_detected": article.language,
-            "ingest_status": "success",
-            "ingested_at": now,
-            "content_hash": content_hash,
-            "created_at": now,
-            "updated_at": now,
+    @staticmethod
+    def _derive_official_risk_signal(article: SourceArticle, summary: str) -> dict[str, Any]:
+        text = f"{article.title} {article.clean_text} {summary}".lower()
+        tags = {str(tag).lower() for tag in (article.tags or [])}
+        source_type = str((article.metadata or {}).get("source_type", "")).lower()
+
+        score = 0
+        if "flood" in tags:
+            score += 35
+        if "water_level" in tags:
+            score += 22
+        if "rainfall" in tags:
+            score += 18
+        if "cyclone" in tags:
+            score += 24
+        if "landslide" in tags:
+            score += 16
+        if source_type == "pdf_bulletin":
+            score += 10
+        if source_type == "map_service_discovery":
+            score += 6
+
+        rain_values = [float(value) for value in re.findall(r"(\d{1,3}(?:\.\d+)?)\s*mm", text)]
+        max_rainfall = max(rain_values) if rain_values else 0.0
+        if max_rainfall >= 150:
+            score += 24
+        elif max_rainfall >= 80:
+            score += 14
+        elif max_rainfall >= 40:
+            score += 8
+
+        danger_terms = [
+            "above danger",
+            "danger level",
+            "crossed danger",
+            "বিপদসীমা",
+            "বিপৎসীমা",
+            "বিপদ সীমা",
+            "সতর্কতা",
+        ]
+        if any(term in text for term in danger_terms):
+            score += 18
+
+        forecast_terms = ["next 24", "next 48", "আগামী ২৪", "আগামী ৪৮", "forecast"]
+        if any(term in text for term in forecast_terms):
+            score += 8
+
+        score = max(0, min(100, int(score)))
+        if score >= 70:
+            level = "critical"
+        elif score >= 45:
+            level = "high"
+        elif score >= 25:
+            level = "warning"
+        else:
+            level = "info"
+
+        return {
+            "score": score,
+            "level": level,
+            "max_rainfall_mm": max_rainfall,
+            "hazard_tags": sorted(tags),
         }
-
-        existing = await self._official_feed_raw_col().find_one({"content_hash": content_hash}, {"_id": 1})
-        if existing:
-            await self._official_feed_raw_col().update_one({"_id": existing["_id"]}, {"$set": payload})
-            return existing["_id"]
-
-        inserted = await self._official_feed_raw_col().insert_one(payload)
-        return inserted.inserted_id
-
-    async def _upsert_official_feed_analysis(self, article: SourceArticle, summary: str, raw_id):
-        now = datetime.utcnow()
-        summary_bn = summary if article.language == "bn" else None
-        summary_en = summary if article.language != "bn" else None
-
-        if article.language == "bn":
-            translated_en = await translation_service.translate_bn_to_en(summary)
-            summary_en = translated_en or summary
-
-        payload = {
-            "raw_feed_id": raw_id,
-            "source_name": article.source,
-            "source_url": article.url,
-            "title": article.title,
-            "feed_text": article.clean_text,
-            "published_at": article.published_at,
-            "language": article.language,
-            "hazard_tags": article.tags,
-            "source_metadata": article.metadata,
-            "llm_model": settings.GEMINI_MODEL,
-            "llm_summary_bn": summary_bn,
-            "llm_summary_en": summary_en,
-            "llm_entities": {"source": article.source, "tags": article.tags, "metadata": article.metadata},
-            "llm_confidence": 0.6,
-            "processed_at": now,
-            "created_at": now,
-            "updated_at": now,
-        }
-
-        await self._official_feed_analysis_col().update_one({"raw_feed_id": raw_id}, {"$set": payload}, upsert=True)
 
     async def run_impact_analysis(self, max_items: int = 30) -> dict[str, Any] | None:
-        processed = await self._collect_analysis_inputs(max_items=max_items)
+        processed = await self._processed_col().find().sort("processed_at", -1).limit(max_items).to_list(length=max_items)
         if not processed:
             return None
 
+        if settings.DISASTER_AI_STRICT_MODE:
+            processed = [item for item in processed if self._is_disaster_processed(item)]
+            if not processed:
+                logger.info("Skipping impact analysis because no disaster-relevant processed items were found")
+                return None
+
         previous_snapshot = await self._impact_col().find_one(sort=[("snapshot_at", -1)])
 
-        ai_payload = await self._generate_ai_impact_json(processed, previous_snapshot)
+        ai_payload, pipeline_provider = await self._generate_ai_impact_json(processed, previous_snapshot)
         if ai_payload is None:
             ai_payload = self._build_fallback_impact_payload(processed, previous_snapshot)
+            pipeline_provider = "heuristic"
 
-        snapshot_doc = self._build_snapshot_doc(ai_payload, source_count=len(processed))
+        snapshot_doc = self._build_snapshot_doc(ai_payload, source_count=len(processed), pipeline_provider=pipeline_provider)
         inserted = await self._impact_col().insert_one(snapshot_doc)
         saved = await self._impact_col().find_one({"_id": inserted.inserted_id})
         return self._serialize_value(saved) if saved else None
@@ -290,9 +297,7 @@ class IngestionOrchestrator:
         self,
         processed_news: list[dict[str, Any]],
         previous_snapshot: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if not settings.GEMINI_API_KEY:
-            return None
+    ) -> tuple[dict[str, Any] | None, str]:
 
         compact_news = []
         for item in processed_news[:20]:
@@ -302,6 +307,7 @@ class IngestionOrchestrator:
                     "summary_bn": item.get("llm_summary_bn"),
                     "summary_en": item.get("llm_summary_en"),
                     "hazard_tags": item.get("hazard_tags") or [],
+                    "risk_signal": item.get("risk_signal") or {},
                 }
             )
 
@@ -315,27 +321,31 @@ class IngestionOrchestrator:
             "danger_level": (previous_snapshot or {}).get("danger_level", "warning"),
         }
 
-        try:
-            ai_payload = await gemini_gateway.impact_analysis(
-                compact_news=compact_news,
-                previous_stats=previous_stats,
-            )
-            if not ai_payload:
-                return None
-            normalized = self._normalize_ai_payload(ai_payload)
+        providers = self._impact_provider_order()
+        for provider in providers:
+            try:
+                ai_payload = await self._invoke_impact_provider(
+                    provider=provider,
+                    compact_news=compact_news,
+                    previous_stats=previous_stats,
+                )
+                if not ai_payload:
+                    continue
 
-            has_summary = bool(normalized.get("executive_summary_en") or normalized.get("executive_summary_bn"))
-            has_actions = bool(normalized.get("priority_actions_en") or normalized.get("priority_actions_bn"))
-            has_recovery = bool(normalized.get("recovery_needs_en") or normalized.get("recovery_needs_bn"))
+                normalized = self._normalize_ai_payload(ai_payload)
+                has_summary = bool(normalized.get("executive_summary_en") or normalized.get("executive_summary_bn"))
+                has_actions = bool(normalized.get("priority_actions_en") or normalized.get("priority_actions_bn"))
+                has_recovery = bool(normalized.get("recovery_needs_en") or normalized.get("recovery_needs_bn"))
 
-            # If the model returns structurally valid but empty analysis, fallback generator should take over.
-            if not (has_summary and (has_actions or has_recovery)):
-                return None
+                # If the model returns structurally valid but empty analysis, fallback generator should take over.
+                if not (has_summary and (has_actions or has_recovery)):
+                    continue
 
-            return normalized
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini impact analysis failed err=%s", exc)
-            return None
+                return normalized, provider
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Impact analysis failed provider=%s err=%s", provider, exc)
+
+        return None, "none"
 
     def _normalize_ai_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         danger = str(payload.get("danger_level", "warning")).lower().strip()
@@ -400,28 +410,7 @@ class IngestionOrchestrator:
             "recovery_needs_bn": ["খাদ্য সহায়তা", "চিকিৎসা সহায়তা", "আশ্রয় প্রস্তুতি"],
         }
 
-    async def _collect_analysis_inputs(self, max_items: int) -> list[dict[str, Any]]:
-        # Real news items remain in news_articles_processed; sources.txt API analyses live in official_feed_analysis.
-        news_docs = await (
-            self._processed_col()
-            .find({"source_name": {"$ne": "sources_txt"}})
-            .sort("processed_at", -1)
-            .limit(max_items)
-            .to_list(length=max_items)
-        )
-        feed_docs = await (
-            self._official_feed_analysis_col()
-            .find()
-            .sort("processed_at", -1)
-            .limit(max_items)
-            .to_list(length=max_items)
-        )
-
-        combined = list(news_docs) + list(feed_docs)
-        combined.sort(key=lambda row: row.get("processed_at") or datetime.min, reverse=True)
-        return combined[:max_items]
-
-    def _build_snapshot_doc(self, ai_payload: dict[str, Any], source_count: int) -> dict[str, Any]:
+    def _build_snapshot_doc(self, ai_payload: dict[str, Any], source_count: int, pipeline_provider: str) -> dict[str, Any]:
         now = datetime.utcnow()
         return {
             "snapshot_code": f"impact-{now.strftime('%Y%m%d%H%M%S')}",
@@ -440,10 +429,64 @@ class IngestionOrchestrator:
             "priority_actions_bn": ai_payload["priority_actions_bn"],
             "recovery_needs": ai_payload["recovery_needs_en"],
             "recovery_needs_bn": ai_payload["recovery_needs_bn"],
-            "source_refs": [{"source": "analysis_inputs", "count": source_count}],
-            "updated_by_pipeline": "gemini-impact-analysis",
+            "source_refs": [{"source": "news_articles_processed", "count": source_count}],
+            "updated_by_pipeline": f"{pipeline_provider}-impact-analysis",
             "created_at": now,
         }
+
+    @staticmethod
+    def _is_disaster_article(article: SourceArticle) -> bool:
+        return is_disaster_related(article.title or "", article.clean_text or "", threshold=1)
+
+    @staticmethod
+    def _is_disaster_processed(item: dict[str, Any]) -> bool:
+        tags = {str(tag).lower() for tag in (item.get("hazard_tags") or [])}
+        if tags.intersection({"flood", "cyclone", "landslide", "storm", "water_level", "rainfall"}):
+            return True
+
+        risk_signal = item.get("risk_signal") or {}
+        if float(risk_signal.get("score") or 0) >= 20:
+            return True
+
+        text = " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("llm_summary_en") or ""),
+                str(item.get("llm_summary_bn") or ""),
+                str(item.get("article_text") or ""),
+            ]
+        )
+        return is_disaster_related("", text, threshold=1)
+
+    @staticmethod
+    def _impact_provider_order() -> list[str]:
+        order: list[str] = []
+        for key in [settings.IMPACT_ANALYSIS_PROVIDER, *IngestionOrchestrator._split_csv(settings.IMPACT_ANALYSIS_FALLBACKS)]:
+            normalized = key.strip().lower()
+            if normalized and normalized not in order:
+                order.append(normalized)
+        return order
+
+    @staticmethod
+    def _split_csv(value: str) -> list[str]:
+        if not value:
+            return []
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    async def _invoke_impact_provider(
+        self,
+        *,
+        provider: str,
+        compact_news: list[dict[str, Any]],
+        previous_stats: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if provider == "qwen":
+            return await qwen_gateway.impact_analysis(compact_news=compact_news, previous_stats=previous_stats)
+        if provider == "gemini":
+            if not settings.GEMINI_API_KEY:
+                return None
+            return await gemini_gateway.impact_analysis(compact_news=compact_news, previous_stats=previous_stats)
+        return None
 
     @staticmethod
     def _derive_priority_actions(tags: list[str]) -> list[str]:
@@ -466,24 +509,8 @@ class IngestionOrchestrator:
         return [self._serialize_value(doc) for doc in docs]
 
     async def get_latest_processed_news(self, limit: int = 20) -> list[dict[str, object]]:
-        news_docs = await (
-            self._processed_col()
-            .find({"source_name": {"$ne": "sources_txt"}})
-            .sort("processed_at", -1)
-            .limit(limit)
-            .to_list(length=limit)
-        )
-        feed_docs = await (
-            self._official_feed_analysis_col()
-            .find()
-            .sort("processed_at", -1)
-            .limit(limit)
-            .to_list(length=limit)
-        )
-
-        docs = list(news_docs) + list(feed_docs)
-        docs.sort(key=lambda row: row.get("processed_at") or datetime.min, reverse=True)
-        docs = docs[:limit]
+        cursor = self._processed_col().find().sort("processed_at", -1).limit(limit)
+        docs = await cursor.to_list(length=limit)
         return [self._serialize_value(doc) for doc in docs]
 
     async def get_latest_impact_snapshot(self) -> dict[str, object] | None:

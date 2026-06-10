@@ -16,15 +16,13 @@ export function DashboardView() {
   const [alerts, setAlerts] = useState<WeatherAlert[] | null>(null);
 
   useEffect(() => {
-    if (!token) {
-      return;
-    }
-
     const loadDashboardData = async () => {
       try {
+        const districtPath = token ? '/authority/district-weather' : '/public/district-weather';
+        const alertsPath = token ? '/authority/weather-alerts' : '/public/weather-alerts';
         const [districtRes, alertsRes] = await Promise.allSettled([
-          api.get<DistrictWeather[]>('/authority/district-weather', token),
-          api.get<WeatherAlert[]>('/authority/weather-alerts', token),
+          api.get<DistrictWeather[]>(districtPath, token),
+          api.get<WeatherAlert[]>(alertsPath, token),
         ]);
 
         if (districtRes.status === 'fulfilled') {

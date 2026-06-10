@@ -1,26 +1,175 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 from urllib.parse import parse_qs, urlparse
+import json
+import ssl
+import urllib.error
+import urllib.request
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.db.database import get_database
+from app.schemas.authority_schema import NotifyCommunityResponse, SimplifyAlertRequest, SimplifyAlertResponse
+from app.services.llm_gateway import gemini_gateway
+from app.services.sms_service import sms_service
+from app.services.district_weather_live_service import get_district_index, get_live_weather_for_district
 from app.security import require_roles
+from app.utils.logger import get_logger
 from app.utils.response import APIResponse, success_response
 
 router = APIRouter(prefix="/authority", tags=["LocalAuthority"])
+FFWC_STATIONS_URL = "https://ffwc.bwdb.gov.bd/data_load/stations/"
+logger = get_logger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _load_union_options() -> list[dict[str, str]]:
+    unions_file = Path(__file__).resolve().parents[1] / "utils" / "geo_union.json"
+
+    with unions_file.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, list) or not payload:
+        return []
+
+    first = payload[0]
+    rows = first.get("data", []) if isinstance(first, dict) else []
+    if not isinstance(rows, list):
+        return []
+
+    options: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        union_id = str(row.get("id", "")).strip()
+        name = str(row.get("name", "")).strip()
+        bn_name = str(row.get("bn_name", name)).strip() or name
+
+        if not union_id or not name:
+            continue
+
+        options.append(
+            {
+                "id": union_id,
+                "name": name,
+                "bn_name": bn_name,
+            }
+        )
+
+    return options
+
+
+def _normalize_union_name(value: str | None) -> str:
+    if not value:
+        return ""
+    return " ".join(value.strip().lower().split())
+
+
+def _resolve_assigned_union(current_user: dict[str, Any]) -> dict[str, str]:
+    assigned_area = str(current_user.get("assignedArea", "")).strip()
+    assigned_area_bn = str(current_user.get("assignedAreaBn", assigned_area)).strip() or assigned_area
+
+    normalized_candidates = {
+        _normalize_union_name(assigned_area),
+        _normalize_union_name(assigned_area_bn),
+    }
+    normalized_candidates.discard("")
+
+    for option in _load_union_options():
+        option_name = str(option.get("name", "")).strip()
+        option_bn_name = str(option.get("bn_name", option_name)).strip() or option_name
+        option_keys = {
+            _normalize_union_name(option_name),
+            _normalize_union_name(option_bn_name),
+        }
+        if normalized_candidates.intersection(option_keys):
+            return {
+                "id": str(option.get("id", "")),
+                "name": option_name,
+                "bn_name": option_bn_name,
+            }
+
+    return {
+        "id": "",
+        "name": assigned_area or "Unknown area",
+        "bn_name": assigned_area_bn or assigned_area or "Unknown area",
+    }
+
+
+def _build_assigned_union_filter(current_user: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    union_info = _resolve_assigned_union(current_user)
+    union_names = {
+        str(union_info.get("name", "")).strip(),
+        str(union_info.get("bn_name", "")).strip(),
+    }
+    union_names.discard("")
+
+    if not union_names:
+        return {"_id": {"$exists": False}}
+
+    or_filters: list[dict[str, Any]] = []
+    for field in fields:
+        for union_name in union_names:
+            or_filters.append(
+                {
+                    field: {
+                        "$regex": f"^{re.escape(union_name)}$",
+                        "$options": "i",
+                    }
+                }
+            )
+
+    return {"$or": or_filters} if or_filters else {"_id": {"$exists": False}}
+
+
+def _is_scoped_role(current_user: dict[str, Any]) -> bool:
+    return str(current_user.get("role", "")).strip() in {"LocalAuthority", "Volunteer"}
+
+
+def _status_from_community_payload(payload: dict[str, Any]) -> str:
+    danger_level = int(payload.get("dangerLevel", 1) or 1)
+    health_emergency = bool(payload.get("healthEmergency", False))
+    clean_water = str(payload.get("cleanWater", "adequate")).strip().lower()
+    road_access = str(payload.get("roadAccess", "clear")).strip().lower()
+
+    if health_emergency or danger_level >= 5:
+        return "rescue"
+    if danger_level >= 3 or clean_water == "critical" or road_access in {"blocked", "partial"}:
+        return "help"
+    return "safe"
 
 
 @router.get("/dashboard/overview", response_model=APIResponse)
-async def dashboard_overview(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+async def dashboard_overview(current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     db = get_database()
-    volunteers = await db["volunteers"].find().to_list(length=None)
-    community_responses = await db["community_responses"].find().to_list(length=None)
+    volunteer_query: dict[str, Any] = {}
+    member_query: dict[str, Any] = {}
+    community_query: dict[str, Any] = {}
 
-    total_members = 2547
+    if _is_scoped_role(current_user):
+        volunteer_query = _build_assigned_union_filter(current_user, ["assignedArea", "assignedAreaBn", "village", "villageBn"])
+        member_query = _build_assigned_union_filter(
+            current_user,
+            ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"],
+        )
+        community_query = _build_assigned_union_filter(
+            current_user,
+            ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"],
+        )
+
+    volunteers = await db["volunteers"].find(volunteer_query).to_list(length=None)
+    members = await db["members"].find(member_query).to_list(length=None)
+    community_responses = await db["community_responses"].find(community_query).to_list(length=None)
+
+    total_members = len(members)
     if community_responses:
         status_counts = {
             "safe": 0,
@@ -32,9 +181,12 @@ async def dashboard_overview(_: dict[str, Any] = Depends(require_roles("LocalAut
             current = row.get("status", "no-response")
             if current in status_counts:
                 status_counts[current] += 1
-        total_members = max(1, len(community_responses))
+        total_members = max(total_members, len(community_responses))
     else:
-        status_counts = {"safe": 1351, "help": 49, "rescue": 6, "no-response": 828}
+        status_counts = {"safe": 0, "help": 0, "rescue": 0, "no-response": 0}
+
+    known_status = status_counts["safe"] + status_counts["help"] + status_counts["rescue"]
+    status_counts["no-response"] = max(0, total_members - known_status)
 
     data = {
         "totalCommunityMembers": total_members,
@@ -126,27 +278,414 @@ async def update_task(task_id: str, payload: dict[str, Any], _: dict[str, Any] =
 
 
 @router.get("/members", response_model=APIResponse)
-async def list_members(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
-    members = await get_database()["members"].find().to_list(length=None)
+async def list_members(current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    query: dict[str, Any] = {}
+    if _is_scoped_role(current_user):
+        query = _build_assigned_union_filter(
+            current_user,
+            ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"],
+        )
+
+    members = await get_database()["members"].find(query).to_list(length=None)
     return success_response("Member list", [_serialize(row) for row in members])
 
 
 @router.get("/community-responses", response_model=APIResponse)
-async def list_community_responses(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
-    rows = await get_database()["community_responses"].find().to_list(length=None)
+async def list_community_responses(current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    query: dict[str, Any] = {}
+    member_query: dict[str, Any] = {}
+    if _is_scoped_role(current_user):
+        scoped_fields = ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"]
+        query = _build_assigned_union_filter(current_user, scoped_fields)
+        member_query = _build_assigned_union_filter(current_user, scoped_fields)
+
+    db = get_database()
+    rows = await db["community_responses"].find(query).to_list(length=None)
+    members = await db["members"].find(member_query).to_list(length=None)
+
+    if members:
+        def _norm(value: Any) -> str:
+            return " ".join(str(value or "").strip().lower().split())
+
+        responses_by_phone: dict[str, dict[str, Any]] = {}
+        responses_by_name: dict[str, dict[str, Any]] = {}
+        matched_response_ids: set[str] = set()
+        for row in rows:
+            phone_key = _norm(row.get("phone"))
+            if phone_key:
+                responses_by_phone[phone_key] = row
+
+            name_key = _norm(row.get("name"))
+            if name_key and name_key not in responses_by_name:
+                responses_by_name[name_key] = row
+
+        synthesized_rows: list[dict[str, Any]] = []
+        for member in members:
+            member_phone = str(member.get("phone", "")).strip() or "N/A"
+            member_name = str(member.get("name", "Member")).strip() or "Member"
+            member_name_bn = str(member.get("nameBn", member_name)).strip() or member_name
+            union_name = str(member.get("union", member.get("village", ""))).strip()
+            union_name_bn = str(member.get("unionbn", member.get("unionBn", member.get("villageBn", union_name)))).strip() or union_name
+
+            response = responses_by_phone.get(_norm(member_phone)) or responses_by_name.get(_norm(member_name))
+            if response:
+                response_id = str(response.get("_id", ""))
+                if response_id:
+                    matched_response_ids.add(response_id)
+                synthesized_rows.append(
+                    {
+                        **response,
+                        "name": response.get("name") or member_name,
+                        "nameBn": response.get("nameBn") or member_name_bn,
+                        "phone": response.get("phone") or member_phone,
+                        "village": response.get("village") or union_name,
+                        "villageBn": response.get("villageBn") or union_name_bn,
+                        "status": response.get("status") or "no-response",
+                        "lastResponse": response.get("lastResponse") or "Just now",
+                        "lastResponseBn": response.get("lastResponseBn") or "এইমাত্র",
+                    }
+                )
+            else:
+                synthesized_rows.append(
+                    {
+                        "_id": str(member.get("_id", "")),
+                        "name": member_name,
+                        "nameBn": member_name_bn,
+                        "phone": member_phone,
+                        "village": union_name,
+                        "villageBn": union_name_bn,
+                        "status": "no-response",
+                        "lastResponse": "Not yet",
+                        "lastResponseBn": "এখনও না",
+                    }
+                )
+
+        # Keep volunteer/local-authority submitted updates visible even when they don't map
+        # to a specific member row by name/phone.
+        for row in rows:
+            response_id = str(row.get("_id", ""))
+            if response_id and response_id in matched_response_ids:
+                continue
+
+            synthesized_rows.append(
+                {
+                    **row,
+                    "name": row.get("name") or row.get("reportedByName") or "Volunteer Update",
+                    "nameBn": row.get("nameBn") or row.get("reportedByName") or "Volunteer Update",
+                    "phone": row.get("phone") or "N/A",
+                    "village": row.get("village") or row.get("union") or "",
+                    "villageBn": row.get("villageBn") or row.get("unionBn") or row.get("unionbn") or row.get("village") or "",
+                    "status": row.get("status") or "no-response",
+                    "lastResponse": row.get("lastResponse") or "Just now",
+                    "lastResponseBn": row.get("lastResponseBn") or "এইমাত্র",
+                }
+            )
+
+        return success_response("Community responses", [_serialize(row) for row in synthesized_rows])
+
     return success_response("Community responses", [_serialize(row) for row in rows])
 
 
-@router.post("/alerts", response_model=APIResponse)
-async def create_union_alert(payload: dict[str, Any], _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+@router.patch("/community-responses/{response_id}", response_model=APIResponse)
+async def update_community_response(
+    response_id: str,
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin")),
+) -> APIResponse:
+    db = get_database()
     now = datetime.now(timezone.utc)
-    doc = {
-        "_id": str(uuid4()),
-        **payload,
-        "created_at": now,
+    scoped_fields = ["union", "unionBn", "unionbn", "assignedArea", "assignedAreaBn", "assignedareabn", "village", "villageBn", "villagebn"]
+
+    find_query: dict[str, Any] = {"_id": response_id}
+    if _is_scoped_role(current_user):
+        find_query = {
+            "$and": [
+                {"_id": response_id},
+                _build_assigned_union_filter(current_user, scoped_fields),
+            ]
+        }
+
+    existing = await db["community_responses"].find_one(find_query)
+
+    member_doc: dict[str, Any] | None = None
+    if existing is None and _is_scoped_role(current_user):
+        member_doc = await db["members"].find_one(
+            {
+                "$and": [
+                    {"_id": response_id},
+                    _build_assigned_union_filter(current_user, scoped_fields),
+                ]
+            }
+        )
+        if member_doc is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Community response not found for your assigned union")
+
+    if member_doc is None and existing is None:
+        member_doc = await db["members"].find_one({"_id": response_id})
+
+    status_value = _status_from_community_payload(payload)
+    union_info = _resolve_assigned_union(current_user)
+
+    base_name = str((existing or {}).get("name") or (member_doc or {}).get("name") or payload.get("name") or "Community Member").strip() or "Community Member"
+    base_name_bn = str((existing or {}).get("nameBn") or (member_doc or {}).get("nameBn") or payload.get("nameBn") or base_name).strip() or base_name
+    base_phone = str((existing or {}).get("phone") or (member_doc or {}).get("phone") or payload.get("phone") or "N/A").strip() or "N/A"
+    base_village = str((existing or {}).get("village") or (member_doc or {}).get("union") or (member_doc or {}).get("village") or union_info["name"]).strip() or union_info["name"]
+    base_village_bn = str(
+        (existing or {}).get("villageBn")
+        or (member_doc or {}).get("unionbn")
+        or (member_doc or {}).get("unionBn")
+        or (member_doc or {}).get("villageBn")
+        or union_info["bn_name"]
+    ).strip() or union_info["bn_name"]
+
+    update_doc = {
+        "name": base_name,
+        "nameBn": base_name_bn,
+        "phone": base_phone,
+        "village": base_village,
+        "villageBn": base_village_bn,
+        "union": base_village,
+        "unionBn": base_village_bn,
+        "status": status_value,
+        "lastResponse": "Just now",
+        "lastResponseBn": "এইমাত্র",
+        "floodLevel": int(payload.get("floodLevel", (existing or {}).get("floodLevel", 0)) or 0),
+        "dangerLevel": int(payload.get("dangerLevel", (existing or {}).get("dangerLevel", 1)) or 1),
+        "householdsAffected": int(payload.get("householdsAffected", (existing or {}).get("householdsAffected", 0)) or 0),
+        "shelterOccupancy": int(payload.get("shelterOccupancy", (existing or {}).get("shelterOccupancy", 0)) or 0),
+        "electricity": str(payload.get("electricity", (existing or {}).get("electricity", "partial"))).strip() or "partial",
+        "communication": str(payload.get("communication", (existing or {}).get("communication", "spotty"))).strip() or "spotty",
+        "cleanWater": str(payload.get("cleanWater", (existing or {}).get("cleanWater", "adequate"))).strip() or "adequate",
+        "roadAccess": str(payload.get("roadAccess", (existing or {}).get("roadAccess", "clear"))).strip() or "clear",
+        "healthEmergency": bool(payload.get("healthEmergency", (existing or {}).get("healthEmergency", False))),
+        "updated_at": now,
     }
-    await get_database()["authority_alerts"].insert_one(doc)
-    return success_response("Alert created", _serialize(doc))
+
+    await db["community_responses"].update_one(
+        {"_id": response_id},
+        {
+            "$set": update_doc,
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+
+    saved = await db["community_responses"].find_one({"_id": response_id})
+    return success_response("Community response updated", _serialize(saved) if saved else None)
+
+
+@router.get("/unions", response_model=APIResponse)
+async def list_unions(_: dict[str, Any] = Depends(require_roles("Volunteer", "LocalAuthority", "Admin"))) -> APIResponse:
+    return success_response("Union options", _load_union_options())
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _extract_user_union_values(current_user: dict[str, Any]) -> list[str]:
+    candidates = [
+        current_user.get("unionId"),
+        current_user.get("union"),
+        current_user.get("unionBn"),
+        current_user.get("assignedArea"),
+        current_user.get("assignedAreaBn"),
+    ]
+    values = []
+    seen = set()
+    for item in candidates:
+        value = _normalize_text(item)
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(value)
+    return values
+
+
+async def _find_union_members(current_user: dict[str, Any]) -> list[dict[str, Any]]:
+    union_values = _extract_user_union_values(current_user)
+    if not union_values:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current authority user has no union/assigned area in users collection",
+        )
+
+    query = {
+        "$or": [
+            {"unionId": {"$in": union_values}},
+            {"union": {"$in": union_values}},
+            {"unionBn": {"$in": union_values}},
+            {"assignedArea": {"$in": union_values}},
+            {"assignedAreaBn": {"$in": union_values}},
+            {"village": {"$in": union_values}},
+            {"villageBn": {"$in": union_values}},
+        ]
+    }
+
+    members = await get_database()["members"].find(query).to_list(length=None)
+    members_with_phone = [row for row in members if _normalize_text(row.get("phone"))]
+    return members_with_phone
+
+
+async def _simplify_message_with_ai(message: str, message_bn: str | None) -> SimplifyAlertResponse:
+    base_text = message.strip()
+    base_text_bn = (message_bn or "").strip() or base_text
+
+    simple_en = await gemini_gateway.simplify_alert_message(text=base_text, language="en")
+    simple_bn = await gemini_gateway.simplify_alert_message(text=base_text_bn, language="bn")
+
+    used_gemini_en = bool(simple_en)
+    used_gemini_bn = bool(simple_bn)
+
+    # Safe fallback if AI provider is unavailable.
+    if not simple_en:
+        simple_en = base_text if len(base_text) <= 160 else f"{base_text[:157]}..."
+    if not simple_bn:
+        simple_bn = base_text_bn if len(base_text_bn) <= 160 else f"{base_text_bn[:157]}..."
+
+    logger.info(
+        "alert_simplify provider en=%s bn=%s input_chars_en=%d input_chars_bn=%d",
+        "gemini" if used_gemini_en else "fallback",
+        "gemini" if used_gemini_bn else "fallback",
+        len(base_text),
+        len(base_text_bn),
+    )
+
+    return SimplifyAlertResponse(message=simple_en, messageBn=simple_bn)
+
+
+@router.post("/alerts", response_model=APIResponse)
+async def create_union_alert(payload: dict[str, Any], current_user: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    notify_message = _normalize_text(payload.get("message"))
+    if notify_message:
+        request_id = f"SMS-{uuid4().hex[:10].upper()}"
+        request_time = datetime.now(timezone.utc)
+        sms_body = _normalize_text(payload.get("simplifiedMessage")) or notify_message
+
+        members = await _find_union_members(current_user)
+        if not members:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No community members found for this authority union",
+            )
+
+        sent_count = 0
+        delivery_logs: list[dict[str, Any]] = []
+        for member in members:
+            member_phone = _normalize_text(member.get("phone"))
+            to_number = sms_service.normalize_phone(member_phone)
+            if not to_number:
+                continue
+
+            try:
+                result = await sms_service.send_sms(to_number=to_number, body=sms_body)
+                sent_count += 1
+                delivery_logs.append(
+                    {
+                        "memberId": str(member.get("_id", "")),
+                        "phone": to_number,
+                        "sid": result.get("sid"),
+                        "status": result.get("status"),
+                        "error_code": result.get("error_code"),
+                        "error_message": result.get("error_message"),
+                        "created_at": request_time,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                delivery_logs.append(
+                    {
+                        "memberId": str(member.get("_id", "")),
+                        "phone": to_number,
+                        "sid": None,
+                        "status": "failed",
+                        "error_code": None,
+                        "error_message": str(exc),
+                        "created_at": request_time,
+                    }
+                )
+
+        if sent_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="SMS gateway did not accept any send request. Check sms.net.bd credentials and destination number.",
+            )
+
+        db = get_database()
+        union_values = _extract_user_union_values(current_user)
+        request_doc = {
+            "_id": request_id,
+            "authorityUserId": str(current_user.get("_id", "")),
+            "authorityRole": str(current_user.get("role", "")),
+            "authorityUnion": union_values[0] if union_values else "",
+            "message": notify_message,
+            "simplifiedMessage": _normalize_text(payload.get("simplifiedMessage")) or None,
+            "smsBody": sms_body,
+            "recipientCount": len(members),
+            "sentCount": sent_count,
+            "created_at": request_time,
+            "updated_at": request_time,
+        }
+        await db["community_alert_requests"].insert_one(request_doc)
+        if delivery_logs:
+            await db["sms_dispatch_logs"].insert_many(delivery_logs)
+
+        response_payload = NotifyCommunityResponse(
+            status="queued",
+            requestId=request_id,
+            recipientCount=len(members),
+            sentCount=sent_count,
+        )
+        return success_response("Community SMS alert request accepted", response_payload.model_dump())
+
+    now = datetime.now(timezone.utc)
+    severity_raw = str(payload.get("severity", "information")).strip().lower()
+    severity = severity_raw if severity_raw in {"information", "warning", "emergency"} else "information"
+    published_date = now.date().isoformat()
+
+    authority_doc = {
+        "_id": str(uuid4()),
+        "headline": str(payload.get("headline", "")).strip(),
+        "headlineBn": str(payload.get("headlineBn", payload.get("headline", "")).strip()),
+        "description": str(payload.get("description", "")).strip(),
+        "descriptionBn": str(payload.get("descriptionBn", payload.get("description", "")).strip()),
+        "severity": severity,
+        "category": str(payload.get("category", "General")).strip() or "General",
+        "categoryBn": str(payload.get("categoryBn", payload.get("category", "General")).strip() or "General"),
+        "region": str(payload.get("region", "Bangladesh")).strip() or "Bangladesh",
+        "regionBn": str(payload.get("regionBn", payload.get("region", "Bangladesh")).strip() or "Bangladesh"),
+        "timeIssued": str(payload.get("timeIssued", "Just now")).strip() or "Just now",
+        "timeIssuedBn": str(payload.get("timeIssuedBn", payload.get("timeIssued", "Just now")).strip() or "Just now"),
+        "publishedDate": str(payload.get("publishedDate", published_date)).strip() or published_date,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    weather_doc = {
+        "_id": authority_doc["_id"],
+        "headline": authority_doc["headline"],
+        "headlineBn": authority_doc["headlineBn"],
+        "description": authority_doc["description"],
+        "descriptionBn": authority_doc["descriptionBn"],
+        "severity": authority_doc["severity"],
+        "category": authority_doc["category"],
+        "categoryBn": authority_doc["categoryBn"],
+        "region": authority_doc["region"],
+        "regionBn": authority_doc["regionBn"],
+        "timeIssued": authority_doc["timeIssued"],
+        "timeIssuedBn": authority_doc["timeIssuedBn"],
+        "status": "active",
+        "publishedDate": authority_doc["publishedDate"],
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    db = get_database()
+    await db["authority_alerts"].insert_one(authority_doc)
+    await db["weather_alerts"].insert_one(weather_doc)
+    return success_response("Alert created", _serialize(authority_doc))
 
 
 @router.get("/weather-alerts", response_model=APIResponse)
@@ -192,6 +731,23 @@ async def reply_query(
 async def list_district_weather(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     rows = await get_database()["district_weather"].find().to_list(length=None)
     return success_response("District weather", [_serialize(row) for row in rows])
+
+
+@router.get("/district-weather/index", response_model=APIResponse)
+async def list_district_weather_index(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    rows = get_district_index()
+    return success_response("District weather index", rows)
+
+
+@router.get("/district-weather/live", response_model=APIResponse)
+async def get_live_district_weather(
+    district: str = Query(..., min_length=1),
+    _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin")),
+) -> APIResponse:
+    row = await asyncio.to_thread(get_live_weather_for_district, district)
+    if row is None:
+        return success_response("District not found", None)
+    return success_response("Live district weather", row)
 
 
 @router.get("/missing-persons", response_model=APIResponse)
@@ -275,19 +831,9 @@ async def list_recent_tasks(_: dict[str, Any] = Depends(require_roles("LocalAuth
 
 
 @router.post("/alerts/simplify", response_model=APIResponse)
-async def simplify_alert_message(payload: dict[str, Any], _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
-    message = payload.get("message", "").strip()
-    if not message:
-        return success_response("Simplified message", {"message": "", "messageBn": ""})
-
-    simplified = message
-    if len(message) > 140:
-        simplified = f"{message[:137]}..."
-    data = {
-        "message": simplified,
-        "messageBn": payload.get("messageBn", simplified),
-    }
-    return success_response("Simplified alert message", data)
+async def simplify_alert_message(payload: SimplifyAlertRequest, _: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    data = await _simplify_message_with_ai(payload.message, payload.messageBn)
+    return success_response("Simplified alert message", data.model_dump())
 
 
 @router.get("/infra-exposures", response_model=APIResponse)
@@ -296,12 +842,265 @@ async def list_infra_exposures(_: dict[str, Any] = Depends(require_roles("LocalA
     return success_response("Infrastructure exposure logs", [_serialize(row) for row in rows])
 
 
+@router.get("/event-logs", response_model=APIResponse)
+async def list_event_logs(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
+    rows = await get_database()["event_logs"].find().sort("created_at", -1).limit(300).to_list(length=300)
+    return success_response("Event logs", [_serialize(row) for row in rows])
+
+
+def _clean_ffwc_value(value: Any) -> Any:
+    if value in ("-", "#N/A", ""):
+        return None
+    return value
+
+
+def _parse_ffwc_float(value: Any) -> float | None:
+    cleaned = _clean_ffwc_value(value)
+    if cleaned is None:
+        return None
+    try:
+        return float(cleaned)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_ffwc_stations() -> list[dict[str, Any]]:
+    request = urllib.request.Request(FFWC_STATIONS_URL, headers={"User-Agent": "Mozilla/5.0"})
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        reason_text = str(getattr(exc, "reason", ""))
+        if "CERTIFICATE_VERIFY_FAILED" not in reason_text and "hostname" not in reason_text.lower():
+            raise
+
+        insecure_context = ssl._create_unverified_context()
+        with urllib.request.urlopen(request, timeout=30, context=insecure_context) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+def _normalize_score(value: float | None, min_value: float | None, max_value: float | None) -> float | None:
+    if value is None or min_value is None or max_value is None:
+        return None
+    if max_value == min_value:
+        return 1.0
+    return (value - min_value) / (max_value - min_value)
+
+
+def _summarize_ffwc_metric(stations: list[dict[str, Any]], metric: str) -> dict[str, Any]:
+    values = [row[metric] for row in stations if isinstance(row.get(metric), float)]
+    null_count = sum(1 for row in stations if row.get(metric) is None)
+    zero_count = sum(1 for row in stations if row.get(metric) == 0.0)
+
+    if not values:
+        return {
+            "count": len(stations),
+            "valid_count": 0,
+            "null_count": null_count,
+            "zero_count": zero_count,
+            "average": None,
+            "min": None,
+            "max": None,
+        }
+
+    return {
+        "count": len(stations),
+        "valid_count": len(values),
+        "null_count": null_count,
+        "zero_count": zero_count,
+        "average": round(sum(values) / len(values), 4),
+        "min": min(values),
+        "max": max(values),
+    }
+
+
+def _is_low_valid_pmdl(pmdl: float | None, pmdl_summary: dict[str, Any]) -> bool:
+    if pmdl is None or pmdl == 0.0:
+        return False
+
+    avg = pmdl_summary.get("average")
+    min_value = pmdl_summary.get("min")
+    if avg is None or min_value is None:
+        return False
+
+    # Lower-side pmdl is the lower half between min and average.
+    low_threshold = min_value + (avg - min_value) / 2
+    return pmdl <= low_threshold
+
+
+def _is_pmdl_rhwl_close(pmdl: float | None, rhwl: float | None, rhwl_summary: dict[str, Any]) -> bool:
+    if pmdl is None or pmdl == 0.0 or rhwl is None:
+        return False
+
+    rhwl_min = rhwl_summary.get("min")
+    rhwl_max = rhwl_summary.get("max")
+    if rhwl_min is None or rhwl_max is None:
+        return False
+
+    rhwl_range = max(0.0, rhwl_max - rhwl_min)
+    tolerance = max(0.5, rhwl_range * 0.1)
+    return abs(rhwl - pmdl) <= tolerance
+
+
+def _is_danger_rhwl_close(danger_level: float | None, rhwl: float | None) -> bool:
+    if danger_level is None or rhwl is None:
+        return False
+    return abs(danger_level - rhwl) < 1.0
+
+
+def _impact_from_score(score: float | None) -> str:
+    if score is None:
+        return "Low"
+    if score >= 0.67:
+        return "High"
+    if score >= 0.34:
+        return "Medium"
+    return "Low"
+
+
+def _rhwl_recency_score(date_text: str | None) -> float | None:
+    if not date_text:
+        return None
+    try:
+        observed = datetime.strptime(date_text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+    age_days = max(0, (datetime.now(timezone.utc) - observed).days)
+    # Recent RHWL date should have strong influence, decaying over ~10 years.
+    return round(max(0.0, 1.0 - (age_days / 3650.0)), 4)
+
+
+def _is_recent_rhwl_within_5_years(date_text: str | None) -> bool:
+    if not date_text:
+        return False
+    try:
+        observed = datetime.strptime(date_text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    age_days = max(0, (datetime.now(timezone.utc) - observed).days)
+    return age_days <= (5 * 365)
+
+
+def _ffwc_points_and_summary() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    rows = _fetch_ffwc_stations()
+    filtered = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lat = _parse_ffwc_float(row.get("lat"))
+        lng = _parse_ffwc_float(row.get("long"))
+        if lat is None or lng is None:
+            continue
+
+        filtered.append(
+            {
+                "id": row.get("id"),
+                "name": _clean_ffwc_value(row.get("name")),
+                "river": _clean_ffwc_value(row.get("river")),
+                "basin": _clean_ffwc_value(row.get("basin")),
+                "lat": lat,
+                "long": lng,
+                "danger_level": _parse_ffwc_float(row.get("dangerlevel")),
+                "rhwl": _parse_ffwc_float(row.get("rhwl")),
+                "pmdl": _parse_ffwc_float(row.get("pmdl")),
+                "division": _clean_ffwc_value(row.get("division")),
+                "district": _clean_ffwc_value(row.get("district")),
+                "upazilla": _clean_ffwc_value(row.get("upazilla")),
+                "union": _clean_ffwc_value(row.get("union")),
+                "date_of_rhwl": _clean_ffwc_value(row.get("date_of_rhwl")),
+            }
+        )
+
+    if not filtered:
+        return [], None
+
+    metric_summary = {
+        "danger_level": _summarize_ffwc_metric(filtered, "danger_level"),
+        "rhwl": _summarize_ffwc_metric(filtered, "rhwl"),
+        "pmdl": _summarize_ffwc_metric(filtered, "pmdl"),
+    }
+
+    danger_min = metric_summary["danger_level"]["min"]
+    danger_max = metric_summary["danger_level"]["max"]
+    rhwl_min = metric_summary["rhwl"]["min"]
+    rhwl_max = metric_summary["rhwl"]["max"]
+    pmdl_min = metric_summary["pmdl"]["min"]
+    pmdl_max = metric_summary["pmdl"]["max"]
+
+    points = []
+    for station in filtered:
+        danger_component = _normalize_score(station.get("danger_level"), danger_min, danger_max)
+        rhwl_component = _normalize_score(station.get("rhwl"), rhwl_min, rhwl_max)
+        pmdl_component = _normalize_score(station.get("pmdl"), pmdl_min, pmdl_max)
+        recency_component = _rhwl_recency_score(station.get("date_of_rhwl"))
+
+        weighted_parts = [
+            (danger_component, 0.45),
+            (rhwl_component, 0.2),
+            (pmdl_component, 0.1),
+            (recency_component, 0.25),
+        ]
+        total_weight = sum(weight for value, weight in weighted_parts if value is not None)
+        weighted_sum = sum((value or 0.0) * weight for value, weight in weighted_parts if value is not None)
+        score = round(weighted_sum / total_weight, 4) if total_weight > 0 else None
+
+        if score is not None and danger_component is not None and danger_component >= 0.8:
+            score = min(1.0, round(score + 0.12, 4))
+
+        # Explicit recency uplift: RHWL in last 5 years increases impact level.
+        if score is not None and _is_recent_rhwl_within_5_years(station.get("date_of_rhwl")):
+            score = min(1.0, round(score + 0.15, 4))
+
+        # Heavy boost when danger level and RHWL are very close.
+        if score is not None and _is_danger_rhwl_close(station.get("danger_level"), station.get("rhwl")):
+            score = min(1.0, round(score + 0.2, 4))
+
+        impact = _impact_from_score(score)
+        if _is_low_valid_pmdl(station.get("pmdl"), metric_summary["pmdl"]) or _is_pmdl_rhwl_close(
+            station.get("pmdl"),
+            station.get("rhwl"),
+            metric_summary["rhwl"],
+        ):
+            if impact == "Low":
+                impact = "High"
+
+        points.append(
+            {
+                "id": f"ffwc-{station.get('id')}",
+                "name": station.get("name") or "Station",
+                "type": "Station",
+                "hazard": "Flood",
+                "severity": impact,
+                "status": "Monitoring",
+                "population": "N/A",
+                "lat": station.get("lat"),
+                "lng": station.get("long"),
+                "impactScore": score,
+                "river": station.get("river"),
+                "basin": station.get("basin"),
+                "dangerLevel": station.get("danger_level"),
+                "rhwl": station.get("rhwl"),
+                "pmdl": station.get("pmdl"),
+                "division": station.get("division"),
+                "district": station.get("district"),
+                "upazilla": station.get("upazilla"),
+                "union": station.get("union"),
+                "dateOfRhwl": station.get("date_of_rhwl"),
+            }
+        )
+
+    return points, metric_summary
+
+
 @router.get("/geospatial-risk", response_model=APIResponse)
 async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAuthority", "Admin"))) -> APIResponse:
     db = get_database()
     exposures = await db["infra_exposure_reports"].find().sort("created_at", -1).to_list(length=None)
     vulnerable_rows = await db["vulnerable_communities"].find().sort("created_at", -1).to_list(length=None)
-    processed_news = await db["official_feed_analysis"].find().sort("processed_at", -1).limit(50).to_list(length=50)
+    processed_news = await db["news_articles_processed"].find({"source_name": "prothom_alo"}).sort("processed_at", -1).limit(50).to_list(length=50)
     latest_snapshot = await db["impact_summary_snapshots"].find_one(sort=[("snapshot_at", -1)])
 
     district_coords: dict[str, tuple[float, float]] = {
@@ -425,65 +1224,31 @@ async def get_geospatial_risk(_: dict[str, Any] = Depends(require_roles("LocalAu
                 }
             )
 
-        # If official feed text has no district names, still publish source-based geospatial points.
-        if not points:
-            source_defaults: dict[str, tuple[float, float]] = {
-                "ffwc.bwdb.gov.bd": (23.8103, 90.4125),
-                "ffwc.gov.bd": (23.8103, 90.4125),
-                "live8.bmd.gov.bd": (23.8103, 90.4125),
-                "mobile.bmd.gov.bd": (23.8103, 90.4125),
-                "unosat-geodrr.cern.ch": (23.6850, 90.3563),
-                "data.humdata.org": (23.6850, 90.3563),
-            }
+    ffwc_points: list[dict[str, Any]] = []
+    ffwc_summary: dict[str, Any] | None = None
+    try:
+        ffwc_points, ffwc_summary = _ffwc_points_and_summary()
+    except Exception:  # noqa: BLE001
+        ffwc_points = []
+        ffwc_summary = None
 
-            for idx, item in enumerate(processed_news[:10]):
-                source_url = str(item.get("source_url", "")).strip()
-                parsed = urlparse(source_url)
-                netloc = parsed.netloc.lower()
-
-                lat_lng = None
-                if "api.met.no" in netloc:
-                    query = parse_qs(parsed.query)
-                    lat_values = query.get("lat") or []
-                    lon_values = query.get("lon") or []
-                    if lat_values and lon_values:
-                        try:
-                            lat_lng = (float(lat_values[0]), float(lon_values[0]))
-                        except Exception:  # noqa: BLE001
-                            lat_lng = None
-
-                if lat_lng is None:
-                    lat_lng = source_defaults.get(netloc, (23.8103, 90.4125))
-
-                hazard_tags = item.get("hazard_tags") or []
-                hazard = hazard_tags[0] if isinstance(hazard_tags, list) and hazard_tags else "flood"
-                severity = "High" if hazard in {"flood", "cyclone", "landslide", "water_level"} else "Medium"
-
-                points.append(
-                    {
-                        "id": f"official-{idx}-{netloc or 'source'}",
-                        "name": item.get("title") or "Official Hazard Feed",
-                        "type": "Official feed alert",
-                        "hazard": hazard,
-                        "severity": severity,
-                        "status": "Monitoring",
-                        "population": "N/A",
-                        "lat": float(lat_lng[0]),
-                        "lng": float(lat_lng[1]),
-                    }
-                )
+    all_points = ffwc_points + points
 
     data = {
         "metrics": {
-            "exposedInfra": max(exposed_infra, len(points)),
-            "highRiskAreas": max(high_risk_areas, len([row for row in points if str(row.get("severity", "")).lower() in {"high", "critical"}])),
+            "exposedInfra": max(exposed_infra, len(all_points)),
+            "highRiskAreas": max(
+                high_risk_areas,
+                len([row for row in all_points if str(row.get("severity", "")).lower() in {"high", "critical"}]),
+            ),
             "affectedPopulation": affected_pop,
             "damagedRoads": damaged_roads,
             "shelterCapacity": shelter_capacity,
             "dangerLevel": (latest_snapshot or {}).get("danger_level", "warning"),
         },
-        "points": points,
-        "priorityAreas": points[:8],
+        "points": all_points,
+        "priorityAreas": all_points[:8],
+        "stationSummary": ffwc_summary,
     }
     return success_response("Geospatial risk payload", _serialize(data))
 

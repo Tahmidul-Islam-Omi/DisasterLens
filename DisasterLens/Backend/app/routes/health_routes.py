@@ -12,7 +12,7 @@ router = APIRouter(prefix="/health", tags=["Health"])
     description="Returns a simple health check confirming the API is running.",
 )
 def health_check() -> APIResponse:
-    """Liveness probe – returns 200 OK with app metadata."""
+    """Liveness probe - returns 200 OK with app metadata."""
     return success_response(
         message="Hello, World! DisasterLens API is up and running 🚀",
         data={

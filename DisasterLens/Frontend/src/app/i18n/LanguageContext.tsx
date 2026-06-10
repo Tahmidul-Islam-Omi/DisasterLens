@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { translations } from "./translations";
 
 type Language = "en" | "bn";
@@ -23,7 +23,14 @@ const LanguageContext = createContext<LanguageContextType>({
 });
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  const [lang, setLang] = useState<Language>("en");
+  const [lang, setLang] = useState<Language>(() => {
+    if (typeof window === "undefined") {
+      return "en";
+    }
+
+    const saved = window.localStorage.getItem("resilienceai_lang");
+    return saved === "bn" || saved === "en" ? saved : "en";
+  });
 
   const bnenconvert = (value: string | number): string => {
     const text = String(value);
@@ -37,12 +44,42 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 
   const toggleLanguage = () => setLang((prev) => (prev === "en" ? "bn" : "en"));
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("resilienceai_lang", lang);
+    }
+  }, [lang]);
+
+  const getByPath = (obj: unknown, keyPath: string): string | undefined => {
+    if (!obj || typeof obj !== "object") {
+      return undefined;
+    }
+
+    const direct = (obj as Record<string, unknown>)[keyPath];
+    if (typeof direct === "string") {
+      return direct;
+    }
+
+    const value = keyPath
+      .split(".")
+      .reduce<unknown>((acc, part) => {
+        if (!acc || typeof acc !== "object") {
+          return undefined;
+        }
+        return (acc as Record<string, unknown>)[part];
+      }, obj);
+
+    return typeof value === "string" ? value : undefined;
+  };
+
   const t = (key: string, params?: Record<string, string | number>) => {
-    const translationObj = translations[lang] as Record<string, string>;
-    let text = translationObj[key] ?? key;
+    const translationObj = translations[lang];
+    const fallbackObj = translations.en;
+    let text = getByPath(translationObj, key) ?? getByPath(fallbackObj, key) ?? key;
+
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
-        text = text.replace(`{{${k}}}`, bnenconvert(v));
+        text = text.replaceAll(`{{${k}}}`, bnenconvert(v));
       });
     }
     return text;

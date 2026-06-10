@@ -45,11 +45,29 @@ class Settings(BaseSettings):
     SOURCE_INSECURE_SSL_HOSTS: str = "ffwc.bwdb.gov.bd"
 
     # AI summarization provider
-    AI_SUMMARIZER_PROVIDER: str = "gemini"
-    AI_SUMMARIZER_FALLBACKS: str = "mistral,qwen"
+    AI_SUMMARIZER_PROVIDER: str = "qwen"
+    AI_SUMMARIZER_FALLBACKS: str = "mistral,gemini"
+    IMPACT_ANALYSIS_PROVIDER: str = "qwen"
+    IMPACT_ANALYSIS_FALLBACKS: str = "gemini"
+    DISASTER_AI_STRICT_MODE: bool = True
+
+    # Hugging Face Router / Qwen
+    HF_TOKEN: str = ""
+    HF_ROUTER_BASE_URL: str = "https://router.huggingface.co/v1/chat/completions"
+    QWEN_MODEL: str = "Qwen/Qwen3.5-397B-A17B"
+    QWEN_TIMEOUT_SECONDS: int = 30
+
+    # Gemini (optional fallback)
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.5-flash"
     GEMINI_TIMEOUT_SECONDS: int = 30
+
+    # sms.net.bd SMS gateway
+    SMSNETBD_ENABLED: bool = False
+    SMSNETBD_API_KEY: str = ""
+    SMSNETBD_BASE_URL: str = "https://api.sms.net.bd/sendsms"
+    SMSNETBD_FORCE_TO: str = ""
+    SMSNETBD_TIMEOUT_SECONDS: int = 20
 
     # Bangladesh geo reference sources
     BANGLA_GEO_DIVISIONS_URL: str = "https://raw.githubusercontent.com/m3h3d1ha2an/banglageoapi/main/src/json/divisions.json"
@@ -62,7 +80,7 @@ class Settings(BaseSettings):
     GEO_FETCH_REMOTE_ON_MISS: bool = False
 
     # Background worker settings
-    ENABLE_INGESTION_WORKER: bool = True
+    ENABLE_INGESTION_WORKER: bool = False
     INGESTION_WORKER_INTERVAL_SECONDS: int = 3600
 
     class Config:
