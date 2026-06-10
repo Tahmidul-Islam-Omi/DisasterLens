@@ -21,7 +21,7 @@ UNOSAT hazard maps    ──┘     BN ⇄ EN translate ──►        └─ 
                               (hourly background worker)
 ```
 
-1. A background worker (hourly by default) crawls enabled sources: the Prothom Alo environment section and official feeds listed in [`Backend/sources.txt`](./Backend/sources.txt) (FFWC PDF bulletins, BMD forecasts, UNOSAT hazard maps, met.no, HDX).
+1. A background worker (hourly by default) crawls enabled sources: the Prothom Alo environment section and official feeds listed in [`sources.txt`](./Backend/sources.txt) (FFWC PDF bulletins, BMD forecasts, UNOSAT hazard maps, met.no, HDX).
 2. Articles are deduplicated by content fingerprint, filtered by disaster keywords, summarized with **Google Gemini** (heuristic extractive fallback when no API key), and translated Bengali ⇄ English.
 3. Gemini then generates **impact snapshots** — fatalities, missing, rescued, estimated losses, danger level, priority actions, and recovery needs — which power the dashboards.
 4. Authorities and volunteers add ground truth on top: infrastructure exposure reports, vulnerable communities, GPS coverage updates, tasks, alerts, and missing-person reports.
@@ -37,30 +37,27 @@ UNOSAT hazard maps    ──┘     BN ⇄ EN translate ──►        └─ 
 
 ## Repository Layout
 
-> **Note:** the application code lives in the nested `DisasterLens/` folder of this repository.
-
 ```
-DisasterLens/                 # repo root
-└── DisasterLens/
-    ├── Backend/              # FastAPI service
-    │   ├── app/
-    │   │   ├── routes/       # auth, authority, volunteer, ingestion, health
-    │   │   ├── services/     # ingestion orchestrator, LLM gateway, auth, translation
-    │   │   ├── sources/      # news source adapters (Prothom Alo, sources.txt feeds)
-    │   │   ├── summarizers/  # AI summarizer providers + fallback chain
-    │   │   ├── jobs/         # geo reference import (divisions → unions)
-    │   │   ├── schemas/      # Pydantic request/response models
-    │   │   ├── config/       # settings (env-driven)
-    │   │   └── db/           # Mongo client
-    │   ├── sources.txt       # official feed URLs to ingest
-    │   └── render.yaml       # Render deployment config
-    └── Frontend/             # React app
-        └── src/app/
-            ├── pages/        # ~30 role-based views
-            ├── components/   # shared components + shadcn/ui
-            ├── contexts/     # Auth, Role
-            ├── config/       # route permissions per role
-            └── i18n/         # EN/BN translations
+DisasterLens/
+├── Backend/              # FastAPI service
+│   ├── app/
+│   │   ├── routes/       # auth, authority, volunteer, ingestion, health
+│   │   ├── services/     # ingestion orchestrator, LLM gateway, auth, translation
+│   │   ├── sources/      # news source adapters (Prothom Alo, sources.txt feeds)
+│   │   ├── summarizers/  # AI summarizer providers + fallback chain
+│   │   ├── jobs/         # geo reference import (divisions → unions)
+│   │   ├── schemas/      # Pydantic request/response models
+│   │   ├── config/       # settings (env-driven)
+│   │   └── db/           # Mongo client
+│   ├── sources.txt       # official feed URLs to ingest
+│   └── render.yaml       # Render deployment config
+└── Frontend/             # React app
+    └── src/app/
+        ├── pages/        # ~30 role-based views
+        ├── components/   # shared components + shadcn/ui
+        ├── contexts/     # Auth, Role
+        ├── config/       # route permissions per role
+        └── i18n/         # EN/BN translations
 ```
 
 ## Quick Start
@@ -71,7 +68,7 @@ DisasterLens/                 # repo root
 
 ```bash
 git clone https://github.com/Tahmidul-Islam-Omi/DisasterLens.git
-cd DisasterLens/DisasterLens
+cd DisasterLens
 ```
 
 ### 2. Backend
@@ -195,8 +192,8 @@ This project is under active development. Current state:
 
 ## Deployment
 
-- **Backend (Render):** [`Backend/render.yaml`](./Backend/render.yaml) defines the service (`rootDir: DisasterLens/Backend`, `uvicorn app.main:app`). Set `MONGODB_URI`, `GEMINI_API_KEY`, and `CORS_ALLOWED_ORIGINS` in the Render dashboard.
-- **Frontend (Netlify):** [`netlify.toml`](./Frontend/netlify.toml) builds from `DisasterLens/Frontend` with SPA redirects. Set `VITE_API_BASE_URL` to your deployed backend's `/api/v1` URL.
+- **Backend (Render):** [`render.yaml`](./Backend/render.yaml) defines the service (`rootDir: Backend`, `uvicorn app.main:app`). Set `MONGODB_URI`, `GEMINI_API_KEY`, and `CORS_ALLOWED_ORIGINS` in the Render dashboard.
+- **Frontend (Netlify):** [`netlify.toml`](./Frontend/netlify.toml) builds from `Frontend` with SPA redirects. Set `VITE_API_BASE_URL` to your deployed backend's `/api/v1` URL.
 
 ## Documentation
 
